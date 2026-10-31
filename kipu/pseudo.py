@@ -224,7 +224,8 @@ class Pseudonimizador:
     def _choca_real(self, p: Persona) -> bool:
         if not self._reales_norm:
             return False
-        return any(plano(f).strip() in self._reales_norm for f in formas_de(p))
+        piezas = [t for x in p.nombres + p.apellidos for t in (x, *x.split())]
+        return any(plano(f).strip() in self._reales_norm for f in list(formas_de(p)) + piezas)
 
     # ------------------------------------------------------------------ números
     def _lejos(self, nuevo_digitos: str, original_digitos: str = "") -> bool:
@@ -322,7 +323,7 @@ class Pseudonimizador:
 
         def armar(resto):
             if len(nums) >= 2:
-                it, k, out = iter(largos), 0, []
+                k, out = 0, []
                 primero = True
                 for g in grupos:
                     if g.isdigit():
@@ -347,37 +348,35 @@ class Pseudonimizador:
     def direccion(self, original: str) -> str:
         """Cambia cada número conservando abreviatura (Cl/Cra/Tv/Dg), Bis, Sur, '#', apto/casa/of."""
         llave = self._canon_dir(original)
-
-        def una(i):
+        orig_d = re.sub(r"\D", "", original)
+        r = original
+        for i in range(200):
             fl = self._flujo(llave, "direccion", i)
-            primero = [True]
+
+            visto = [False]
 
             def num(m):
                 s = m.group(0)
-                n = len(s)
-                nuevo = s
+                primero, visto[0] = not visto[0], True
                 for _ in range(10):
-                    nuevo = fl.digitos(n, True)
+                    if len(s) >= 3 and primero:
+                        nuevo = str(100 + fl.rango(80))[:len(s)].ljust(len(s), "0")  # calles 100-179
+                    elif len(s) >= 3:
+                        nuevo = str(1 + fl.rango(20 if len(s) == 4 else 9)) + f"{1 + fl.rango(12):02d}"  # piso + unidad
+                    else:
+                        nuevo = fl.digitos(len(s), True)
                     if nuevo != s:
-                        break
-                    nuevo = str((int(s) % (10 ** n)) + 1)[:n]
-                return nuevo
+                        return nuevo
+                return str(int(s) % 9 + 1) * len(s)
 
             def letra(m):
-                return m.group(1) + fl.elegir("ABCDE")
+                alfabeto = "ABCDE" if m.group(0).isupper() else "abcde"
+                return fl.elegir(alfabeto)
 
             r = re.sub(r"\d+", num, original)
-            r = re.sub(r"(?<=\d)[A-Ea-e](?![A-Za-z])", lambda m: fl.elegir("ABCDE") if m.group(0).isupper() else fl.elegir("abcde"), r)
-            return r
-
-        return self._intentar(llave, "direccion_x", lambda fl: None, "") if False else self._dir_loop(llave, original, una)
-
-    def _dir_loop(self, llave, original, una):
-        o = re.sub(r"\D", "", original)
-        for i in range(200):
-            r = una(i)
-            if r != original and self._lejos(re.sub(r"\D", "", r), o):
-                return r
+            r = re.sub(r"(?<=\d)[A-Ea-e](?![A-Za-z])", letra, r)
+            if r != original and self._lejos(re.sub(r"\D", "", r), orig_d):
+                break
         return r
 
     @staticmethod
@@ -386,22 +385,22 @@ class Pseudonimizador:
         return " ".join(_ABREV_VIA.get(t, t) for t in toks)
 
     def nacimiento(self, original: str) -> str:
-        m = re.fullmatch(r"\s*(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(.*)", original, re.S)
-        orden, sep, resto = None, None, ""
+        """Fecha válida entre 1 y 5 años distinta, con el mismo formato (ISO, d/m/a o "d de mes de a")."""
+        m = re.fullmatch(r"(\s*)(\d{4})([-/.])(\d{1,2})\3(\d{1,2})(.*)", original, re.S)
         if m:
-            y, sep, mo, d, resto = int(m[1]), m[2], int(m[3]), int(m[4]), m[5]
-            orden = "ymd"
+            ini, y, sep, mo, d, resto = m[1], int(m[2]), m[3], int(m[4]), int(m[5]), m[6]
+            orden, ancho = "ymd", len(m[4]) == 2 or len(m[5]) == 2
         else:
-            m = re.fullmatch(r"\s*(\d{1,2})([-/.])(\d{1,2})\2(\d{4})(.*)", original, re.S)
+            m = re.fullmatch(r"(\s*)(\d{1,2})([-/.])(\d{1,2})\3(\d{4})(.*)", original, re.S)
             if m:
-                d, sep, mo, y, resto = int(m[1]), m[2], int(m[3]), int(m[4]), m[5]
-                orden = "dmy"
+                ini, d, sep, mo, y, resto = m[1], int(m[2]), m[3], int(m[4]), int(m[5]), m[6]
+                orden, ancho = "dmy", len(m[2]) == 2 or len(m[4]) == 2
             else:
-                m = re.fullmatch(r"\s*(\d{1,2}) de ([a-záéíóú]+) de (\d{4})(.*)", original, re.S | re.I)
-                if not m or plano(m[2]) not in _MESES:
+                m = re.fullmatch(r"(\s*)(\d{1,2}) de ([A-Za-záéíóúÁÉÍÓÚ]+) de (\d{4})(.*)", original, re.S)
+                if not m or plano(m[3]) not in _MESES:
                     return original
-                d, mo, y, resto = int(m[1]), _MESES.index(plano(m[2])) + 1, int(m[3]), m[4]
-                orden = "texto"
+                ini, d, mo, y, resto = m[1], int(m[2]), _MESES.index(plano(m[3])) + 1, int(m[4]), m[5]
+                orden, ancho, sep = "texto", False, " "
         try:
             base = dt.date(y, mo, d)
         except ValueError:
@@ -409,19 +408,19 @@ class Pseudonimizador:
         fl = self._flujo(base.isoformat(), "nacimiento")
         dias = 365 + fl.rango(1461)
         nueva = base + dt.timedelta(days=dias if fl.rango(2) else -dias)
+
+        def f(v):
+            return str(v).zfill(2) if ancho else str(v)
+
         if orden == "ymd":
-            w = lambda x, n: str(x).zfill(n) if len(m[3 if n == 2 else 0] or "") > 1 or True else str(x)
-            ancho = len(m[3]) == 2 or len(m[4]) == 2
-            f = lambda v: str(v).zfill(2) if ancho else str(v)
-            return f"{nueva.year}{sep}{f(nueva.month)}{sep}{f(nueva.day)}{resto}"
-        if orden == "dmy":
-            ancho = len(m[1]) == 2 or len(m[3]) == 2
-            f = lambda v: str(v).zfill(2) if ancho else str(v)
-            return f"{f(nueva.day)}{sep}{f(nueva.month)}{sep}{nueva.year}{resto}"
-        mes = _MESES[nueva.month - 1]
-        if m[2][:1].isupper():
-            mes = mes.capitalize()
-        return f"{nueva.day} de {mes} de {nueva.year}{resto}"
+            t = f"{nueva.year}{sep}{f(nueva.month)}{sep}{f(nueva.day)}"
+        elif orden == "dmy":
+            t = f"{f(nueva.day)}{sep}{f(nueva.month)}{sep}{nueva.year}"
+        else:
+            mes = _MESES[nueva.month - 1]
+            mes = mes.capitalize() if m[3][:1].isupper() else mes
+            t = f"{nueva.day} de {mes} de {nueva.year}"
+        return ini + t + resto
 
     def barrio(self, original: str, ciudad: str, barrios_por_ciudad: dict) -> str:
         ref = None
