@@ -169,7 +169,28 @@ def norm_mapa(s: str):
         for c in piece:
             out.append(c)
             mapa.append(i)
-    return "".join(out), mapa
+    return _desleet("".join(out)), mapa
+
+
+_LEET = {"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"}
+_RX_TOKEN_LEET = re.compile(r"(?<![a-z0-9])[a-z][a-z0-9]{3,}(?![a-z0-9])")
+
+
+def _desleet(n: str) -> str:
+    """'c4mila restrep0' -> 'camila restrepo' sin mover offsets: solo palabras que empiezan con letra, con 3+ letras
+    y 1 o 2 dígitos de los que se usan como letra. Números, ids y códigos (2+ dígitos seguidos o sin letras) no cambian."""
+    if not any(ch.isdigit() for ch in n):
+        return n
+
+    def cambiar(m):
+        w = m.group(0)
+        dig = [ch for ch in w if ch.isdigit()]
+        if not (1 <= len(dig) <= 2) or sum(ch.isalpha() for ch in w) < 3 or re.search(r"\d\d", w):
+            return w
+        if any(ch not in _LEET for ch in dig):
+            return w
+        return "".join(_LEET.get(ch, ch) for ch in w)
+    return _RX_TOKEN_LEET.sub(cambiar, n)
 
 
 def span_original(mapa, ini, fin, largo_orig):
