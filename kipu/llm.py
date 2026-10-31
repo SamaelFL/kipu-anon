@@ -34,11 +34,11 @@ from dataclasses import dataclass
 
 from .modelo import Mencion
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 MODELO_DEFAULT = "anthropic/claude-haiku-5.5"
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT = 30
-MAX_TOKENS = 2500
+MAX_TOKENS = 3500
 HILOS = 8
 REINTENTOS = 3                  # ante 429/5xx
 MAX_CHARS_LOTE = 18000          # texto máximo por llamada
@@ -74,6 +74,7 @@ CRITERIOS
 - Un apellido que también es un lugar ("Castilla", "Santander", "Bolívar", "Restrepo") SÍ es persona cuando nombra a una persona ("señor Santander", "Mario Bolívar") y es lugar u organización cuando nombra un lugar o un banco ("Transferencia a Santander", "Parque Simón Bolívar").
 - Reporta cada nombre distinto UNA sola vez en toda la lista (con el primer registro donde aparece, y como mucho una vez por variante de escritura); el programa encuentra el resto de las apariciones. No repitas.
 - No reportes a Kipi (el bot de Kipu Pay).
+- Lugares y organizaciones: NO los listes, salvo que su nombre pueda confundirse con un apellido o nombre de persona (Santander, Bolívar, Castilla, Restrepo, Botero, Valdez...) o sea una figura pública. Ciudades, barrios, bancos, comercios y marcas comunes se omiten.
 - Reporta nombres aunque estén en MAYÚSCULAS, sin tildes o con errores de ortografía; copia exactamente cómo aparecen.
 - No reportes correos, teléfonos, cédulas, placas ni direcciones: otros programas se encargan.
 - Si no hay nada, responde [].
@@ -164,6 +165,78 @@ def _norm(s):
 
 def _solapa(spans, a, b):
     return any(a < f and i < b for i, f in spans)
+
+
+# ------------------------------------------------------------------ unidades
+FILAS_POR_UNIDAD = 40
+_RX_LIBRE = re.compile(r" - |\(|recibido de |Transferencia de |[A-ZÁÉÍÓÚÑ]{3,} [A-ZÁÉÍÓÚÑ]{3,}|\bCC\b|llave \d|placa|Acuerdo|consultorio|hotel|póliza|"
+                       r"Transferencia a (?!llave celular)|Abono|Débito|Cuota inicial|Pago (?:total|cuota)")
+COLUMNAS_LIBRES = {"clientes": ("notas",), "pqrs": ("descripcion", "respuesta"), "transacciones": ("descripcion",)}
+
+
+def _planos(records):
+    if isinstance(records, dict):
+        return list(records.get("chats", ())), list(records.get("docs", ())), list(records.get("tables", ()))
+    ch, dc, tb = [], [], []
+    for r in records:
+        (ch if "thread_id" in r else dc if "format" in r else tb).append(r)
+    return ch, dc, tb
+
+
+def unidades_de(records):
+    """Arma las unidades de recall tal como las usa el pipeline.
+    records: {"chats": [...], "docs": [...], "tables": [...]} o una lista plana de registros normalizados.
+      - un hilo de chat completo por unidad (por thread_id, ordenado por ts): text y nombres de adjuntos;
+      - un documento por unidad: body, title, filename y cada valor de metadata (campo metadata.<clave>);
+      - tablas: solo texto libre (clientes.notas, pqrs.descripcion/respuesta, transacciones.descripcion con
+        letras más allá de la plantilla del comercio), en lotes de filas independientes."""
+    chats, docs, tables = _planos(records)
+    out = []
+    hilos = {}
+    for c in chats:
+        hilos.setdefault(c.get("thread_id") or c["id"], []).append(c)
+    for tid in sorted(hilos):
+        regs = []
+        for m in sorted(hilos[tid], key=lambda c: (float(c.get("ts") or 0) if str(c.get("ts") or "0").replace(".", "", 1).isdigit() else 0, c["id"])):
+            if m.get("text"):
+                regs.append({"record_id": m["id"], "campo": "text", "texto": m["text"]})
+            for i, a in enumerate(m.get("attachments") or []):
+                if isinstance(a, dict) and a.get("filename"):
+                    regs.append({"record_id": m["id"], "campo": "attachments.%d.filename" % i, "texto": a["filename"]})
+        if regs:
+            out.append({"procedencia": "chat " + str(tid), "registros": regs})
+    for d in sorted(docs, key=lambda d: d["id"]):
+        regs = []
+        for campo in ("title", "filename", "body"):
+            if isinstance(d.get(campo), str) and d[campo].strip():
+                regs.append({"record_id": d["id"], "campo": campo, "texto": d[campo]})
+        for k, v in (d.get("metadata") or {}).items():
+            if isinstance(v, str) and v.strip():
+                regs.append({"record_id": d["id"], "campo": "metadata." + k, "texto": v})
+        if regs:
+            out.append({"procedencia": "documento %s (%s)" % (d["id"], d.get("format", "")), "registros": regs})
+    plantillas = {}
+    for t in tables:
+        if t.get("table") == "transacciones":
+            k = re.sub(r"\d+", "#", (t.get("columns") or {}).get("descripcion", ""))
+            plantillas[k] = plantillas.get(k, 0) + 1
+    por_col = {}
+    for t in sorted(tables, key=lambda t: t["id"]):
+        cols = t.get("columns") or {}
+        for col in COLUMNAS_LIBRES.get(t.get("table"), ()):
+            v = cols.get(col)
+            if not isinstance(v, str) or not v.strip():
+                continue
+            if t["table"] == "transacciones":
+                plantilla = plantillas.get(re.sub(r"\d+", "#", v), 0) >= 5 and len(plantillas) > 1
+                if plantilla or not _RX_LIBRE.search(v):
+                    continue
+            por_col.setdefault((t["table"], col), []).append({"record_id": t["id"], "campo": "columns." + col, "texto": v})
+    for (tabla, col), regs in sorted(por_col.items()):
+        for i in range(0, len(regs), FILAS_POR_UNIDAD):
+            out.append({"procedencia": "tabla %s, columna %s (filas independientes entre sí)" % (tabla, col),
+                        "registros": regs[i:i + FILAS_POR_UNIDAD], "independientes": True})
+    return out
 
 
 # ------------------------------------------------------------------ resultado
@@ -273,7 +346,7 @@ def _lotes(unidad):
     if actual:
         lotes.append(actual)
     proc = str(unidad.get("procedencia", ""))[:200]
-    return [({"procedencia": proc, "registros": l}) for l in lotes], regs
+    return [({"procedencia": proc, "registros": l}) for l in lotes], regs, bool(unidad.get("independientes"))
 
 
 def _parsea(texto):
@@ -337,7 +410,7 @@ def _procesa_lote(lote, modelo, cliente):
     return items
 
 
-def _valida(items, regs, spans_conocidos, textos_conocidos, salida, sugerencias):
+def _valida(items, regs, spans_conocidos, textos_conocidos, salida, sugerencias, indep=False):
     vistos = set()
     por_rid = {}
     for (rid, campo) in regs:
@@ -365,6 +438,8 @@ def _valida(items, regs, spans_conocidos, textos_conocidos, salida, sugerencias)
             continue                                      # span inventado: no existe en ese record_id y campo
         # el modelo reporta cada nombre una vez; se busca en todos los registros de la unidad
         for (rid2, campo2), (limpio, ini, fin, orig) in regs.items():
+            if indep and rid2 != rid:
+                continue                                  # filas de tabla: cada una es otra persona
             pos = 0
             while True:
                 a = limpio.find(txt, pos)
@@ -395,20 +470,20 @@ def recall(unidades, conocidas=(), sugerencias=None, cliente=None):
     spans, textos = _prepara_conocidas(conocidas)
     trabajos = []
     for u in unidades:
-        lotes, regs = _lotes(u)
-        trabajos.extend((l, regs) for l in lotes)
+        lotes, regs, indep = _lotes(u)
+        trabajos.extend((l, regs, indep) for l in lotes)
     if not trabajos:
         return []
     salida, sugs = [], []
     with cf.ThreadPoolExecutor(max_workers=HILOS) as ex:
-        futs = [(ex.submit(_procesa_lote, l, modelo, cliente), regs) for l, regs in trabajos]
-        for fut, regs in futs:
+        futs = [(ex.submit(_procesa_lote, l, modelo, cliente), regs, indep) for l, regs, indep in trabajos]
+        for fut, regs, indep in futs:
             try:
                 items = fut.result()
             except Exception:  # noqa: BLE001
                 _suma(fallos=1)
                 continue
-            _valida(items, regs, spans, textos, salida, sugs)
+            _valida(items, regs, spans, textos, salida, sugs, indep)
     # un mismo span no se devuelve dos veces aunque venga de lotes distintos
     uniq = {}
     for m in salida:
