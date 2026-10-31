@@ -9,7 +9,7 @@ flowchart TB
     direction LR
     I["1 Ingesta<br/>Latin-1, PDF por zlib,<br/>metadata, comentarios<br/>HTML/XML, front matter"]
     R["2 Registro de personas<br/>clientes, empleados,<br/>users, pqrs<br/>todas las formas"]
-    DET["3 Detección en capas<br/>diccionario normalizado<br/>patrones: correo, arroba,<br/>cédula, celular, placa,<br/>pasaporte, UID, handles<br/>LLM solo para el resto"]
+    DET["3 Detección en capas<br/>diccionario normalizado<br/>patrones: correo, arroba,<br/>cédula, celular, placa,<br/>pasaporte, UID, handles<br/>coincidencia tolerante<br/>LLM de recall con caché"]
     RES["4 Resolución<br/>llave CL / KP / radicado / uid<br/>> cédula, correo, celular<br/>> hilo > maestro<br/>homónimos nunca por nombre"]
     I --> R --> DET --> RES
   end
@@ -23,9 +23,10 @@ flowchart TB
   end
   F --> I
   RES --> P
-  M[("pseudomap + registro<br/>volumen persistente")]
+  M[("pseudomap + registro<br/>+ caché LLM · volumen")]
   P <--> M
   CHK --> O["output/<br/>chats · docs · tables<br/>+ entities.json honesto"]
   M --> AN["POST /anonymize<br/>mismo registro y mapa<br/>50 registros en menos de 60 s"]
   O --> S["Servicio /v1 en Railway<br/>/health · /run · /output · /entities"]
   AN --> S
+  CHK -.-> J["Juez local<br/>replica validar.mjs<br/>sample + tests + trampas"]
