@@ -21,8 +21,8 @@ def cliente(cid, ciudad, barrio, ocu, vinc, nac="1990-01-01", notas=""):
                         "ocupacion": ocu, "fecha_vinculacion": f"{vinc}-05-01", "fecha_nacimiento": nac, "notas": notas}}
 
 
-def chat(i, texto):
-    return {"id": i, "thread_id": "t", "author": "a", "ts": "1", "text": texto, "attachments": []}
+def chat(i, texto, hilo="t"):
+    return {"id": i, "thread_id": hilo, "author": "a", "ts": "1", "text": texto, "attachments": []}
 
 
 def maestro_base():
@@ -312,6 +312,158 @@ class TuplaSinBarrio(unittest.TestCase):
         self.assertIn("Barranquilla", t)
         for rid, original in antes.items():
             self.assertEqual(json.dumps(por[rid], ensure_ascii=False), original)
+
+
+def empleado(eid, cargo, ciudad, ingreso):
+    return {"id": f"empleados:{eid}", "table": "empleados",
+            "columns": {"id": eid, "cargo": cargo, "ciudad": ciudad, "ingreso": str(ingreso), "nombre": "N N"}}
+
+
+def doc(i, body):
+    return {"id": i, "format": "md", "filename": i + ".md", "title": "t", "body": body, "metadata": {}}
+
+
+class FormasDelOficioBarrioYAnio(unittest.TestCase):
+    """Giros del texto real: "soy contador", "trabajo como fotógrafa", "de profesión arquitecto", barrio con
+    preposiciones y años como "desde 2021", "en el 2024", "hace dos años, en 2024"."""
+
+    def correr(self, texto, extra=()):
+        m = maestro_base() + list(extra)
+        r = [chat("z1", texto)]
+        cuasi.aplicar(m + r, [], pseudo())
+        return r[0]["text"]
+
+    def test_soy_y_vivo_en(self):
+        self.assertEqual(self.correr("Soy arquitecto y vivo en Chapinero."),
+                         "Soy profesional de la construcción y vivo en Bogotá.")
+
+    def test_trabajo_como(self):
+        self.assertEqual(self.correr("Trabajo como fotógrafa por los lados de Granada."),
+                         "Trabajo como profesional de las industrias creativas por los lados de Cali.")
+
+    def test_de_profesion(self):
+        self.assertEqual(self.correr("De profesión arquitecto, vivo en Chapinero"),
+                         "De profesión profesional de la construcción, vivo en Bogotá")
+
+    def test_anio_en_el(self):
+        m = [cliente("CL-30", "Cali", "Granada", "fotógrafa", 2024)]
+        t = self.correr("Soy fotógrafa de Cali y me vinculé en el 2024", m)
+        self.assertEqual(t, "Soy profesional de las industrias creativas de Cali y me vinculé hace unos años")
+
+    def test_hace_dos_anios_en(self):
+        m = [cliente("CL-30", "Cali", "Granada", "fotógrafa", 2024)]
+        t = self.correr("Soy fotógrafa de Cali, cliente hace dos años, en 2024, y paso por Granada", m)
+        self.assertNotIn("2024", t)
+        self.assertNotIn("fotógrafa", t)
+        self.assertIn("hace unos años", t)
+
+    def test_desde_el(self):
+        m = [cliente("CL-30", "Cali", "Granada", "fotógrafa", 2024)]
+        t = self.correr("Es fotógrafa de Cali, cliente desde el 2024", m)
+        self.assertEqual(t, "Es profesional de las industrias creativas de Cali, cliente desde hace unos años")
+
+    def test_cliente_nuestro_desde_caso_doc_08(self):
+        m = [cliente("CL-13198", "Medellín", "Itagüí", "chef", 2021)]
+        r = [doc("doc_08", "## Cuenta destino\n\nTitular: chef de Medellín, cliente nuestro desde 2021. Niega conocer al afectado.")]
+        cuasi.aplicar(maestro_base() + m + r, [], pseudo())
+        self.assertEqual(r[0]["body"], "## Cuenta destino\n\nTitular: profesional de las industrias creativas de Medellín, "
+                                       "cliente nuestro desde hace unos años. Niega conocer al afectado.")
+
+    def test_barrio_ambiguo_usa_la_ciudad_del_cliente(self):
+        m = [cliente("CL-A", "Medellín", "Castilla", "administrador", 2020),
+             cliente("CL-B", "Bogotá", "Castilla", "contador", 2022)]
+        t = self.correr("Para que dimensionen: el afectado es administrador, vive en Castilla y es cliente desde 2020.", m)
+        self.assertEqual(t, "Para que dimensionen: el afectado es profesional de servicios, vive en Medellín y es cliente desde hace unos años.")
+
+
+class TuplasEnElMismoHilo(unittest.TestCase):
+    def hilo(self, textos, hilo="h1"):
+        return [chat("m%d" % i, t, hilo=hilo) for i, t in enumerate(textos)]
+
+    def test_oficio_y_barrio_en_mensajes_distintos(self):
+        r = self.hilo(["Hola, necesito ayuda con mi cuenta.", "Soy arquitecto, por cierto.",
+                       "Y vivo por los lados de Chapinero."])
+        cuasi.aplicar(maestro_base() + r, [], pseudo())
+        self.assertEqual(r[1]["text"], "Soy profesional de la construcción, por cierto.")
+        self.assertEqual(r[2]["text"], "Y vivo por los lados de Bogotá.")
+        self.assertEqual(r[0]["text"], "Hola, necesito ayuda con mi cuenta.")
+
+    def test_oficio_barrio_y_anio_en_tres_mensajes(self):
+        r = self.hilo(["Soy contadora.", "Estoy en Centro, Pereira.", "Y llevo con ustedes desde 2023."])
+        cuasi.aplicar(maestro_base() + r, [], pseudo())
+        self.assertEqual(r[0]["text"], "Soy profesional de servicios.")
+        self.assertEqual(r[2]["text"], "Y llevo con ustedes desde hace unos años.")
+        self.assertIn("Pereira", r[1]["text"])
+        self.assertNotIn("Centro", r[1]["text"].replace("Pereira", ""))
+
+    def test_hilos_distintos_no_se_mezclan(self):
+        a = self.hilo(["Soy arquitecto, gracias."], hilo="h1")
+        b = [chat("otro", "Vivo en Chapinero.", hilo="h2")]
+        cuasi.aplicar(maestro_base() + a + b, [], pseudo())
+        self.assertEqual(a[0]["text"], "Soy arquitecto, gracias.")
+        self.assertEqual(b[0]["text"], "Vivo en Chapinero.")
+
+    def test_combinacion_que_no_existe_no_se_toca(self):
+        # arquitecto + Granada no existe en el maestro: en mensajes distintos no se generaliza
+        r = self.hilo(["Soy arquitecto, gracias.", "Mi hermana vive en Granada."])
+        cuasi.aplicar(maestro_base() + r, [], pseudo())
+        self.assertEqual(r[0]["text"], "Soy arquitecto, gracias.")
+        self.assertEqual(r[1]["text"], "Mi hermana vive en Granada.")
+
+
+class TuplasDeEmpleados(unittest.TestCase):
+    def test_doc_25_cargo_barrio_anio(self):
+        m = maestro_base() + [cliente("CL-X", "Barranquilla", "El Prado", "chef", 2020),
+                              empleado("KP-020", "Agente de Soporte", "Barranquilla", 2024),
+                              empleado("KP-012", "Agente de Soporte", "Cali", 2024),
+                              empleado("KP-023", "Agente de Soporte", "Medellín", 2024)]
+        d = doc("doc_25", "Hoy aplica a una agente de soporte en Barranquilla, con nosotros desde 2024; "
+                          "su lugar de trabajo registrado es su casa en El Prado.")
+        cuasi.aplicar(m + [d], [], pseudo())
+        self.assertEqual(d["body"], "Hoy aplica a una agente de soporte en Barranquilla, con nosotros desde hace unos años; "
+                                    "su lugar de trabajo registrado es su casa en Barranquilla.")
+
+    def test_evaluacion_con_ingreso_y_vive_en(self):
+        m = maestro_base() + [empleado("KP-022", "Agente de Soporte", "Cali", 2025),
+                              empleado("KP-021", "Agente de Soporte", "Bogotá", 2025)]
+        d = doc("doc_15", "Cargo: Agente de Soporte\nIngreso: 2025\nComo vive en Granada, a diez minutos del coworking de Cali, apoya.")
+        cuasi.aplicar(m + [d], [], pseudo())
+        self.assertNotIn("Granada", d["body"])
+        self.assertIn("Cali", d["body"])
+        self.assertNotIn("2025", d["body"])
+
+    def test_sin_empleados_no_hay_cambio(self):
+        d = doc("d", "Una agente de soporte en Barranquilla, con nosotros desde 2024, vive en El Prado.")
+        antes = d["body"]
+        cuasi.aplicar(maestro_base() + [d], [], pseudo())
+        self.assertEqual(d["body"], antes)
+
+
+class CorridaRealIndirectas(unittest.TestCase):
+    """Los casos que la corrida 1 dejó pasar, sobre fuentes/ reales."""
+
+    def test_fuentes(self):
+        base = RAIZ / "fuentes"
+        if not base.exists():
+            self.skipTest("sin fuentes/")
+        from kipu import ingest
+        from kipu.sources import LocalSource
+        src = LocalSource(str(base))
+        recs = ingest.ingest_chats(src) + ingest.ingest_docs(src) + ingest.ingest_tables(src)
+        cuasi.aplicar(recs, [], pseudo())
+        por = {r["id"]: r for r in recs}
+        b8 = por["doc_08"]["body"]
+        self.assertNotIn("chef de Medellín", b8)
+        self.assertNotIn("cliente nuestro desde 2021", b8)
+        self.assertIn("cliente nuestro desde hace unos años", b8)
+        for rid, barrio in (("doc_12", "Itagüí"), ("doc_15", "Granada"), ("doc_25", "El Prado")):
+            self.assertNotIn(barrio, por[rid]["body"], rid)
+        self.assertNotIn("con nosotros desde 2024", por["doc_25"]["body"])
+        self.assertIn("Vive en Medellín", por["doc_12"]["body"])
+        self.assertIn("Barranquilla", por["doc_25"]["body"])
+        t = por["56ff388c-7104-580c-b0d3-aff18b955d24"]["text"]
+        self.assertNotIn("Castilla", t)
+        self.assertNotIn("administrador", t)
 
 
 if __name__ == "__main__":

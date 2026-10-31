@@ -25,7 +25,9 @@ CLAVES_PROTEGIDAS = {"id", "thread_id", "ts", "table", "format", "ocupacion", "b
 
 # contexto de "me vinculé en/desde ..." mirando hacia atrás en la misma frase
 _CTX = re.compile(
-    r"entré|ingresé|ingreso\b|me vinculé|vinculad[oa]s?\b|vinculación|(?:cliente|clienta|usuari[oa]|afiliad[oa]|socio|socia)\s+desde"
+    r"entré|ingresé|ingresó|ingreso\b|me vinculé|vinculad[oa]s?\b|vinculación|vinculó"
+    r"|(?:cliente|clienta|usuari[oa]|afiliad[oa]|socio|socia)\s+(?:\w+\s+){0,2}?desde|nuestr[oa]\s+(?:cliente|clienta)"
+    r"|(?:cliente|clienta)\s+(?:nuestr[oa]\s+)?(?:hace|desde)|trabaja\s+con\s+nosotros|(?:está|estamos)\s+con\s+nosotros"
     r"|me uní|me registré|me inscribí|abrí (?:mi|la|una) cuenta|con ustedes|con kipu"
     r"|desde que (?:soy|estoy)|antigüedad|con nosotros|lleva\b|llevo\b|llevamos\b"
 )
@@ -100,9 +102,32 @@ def _anio_con_contexto(s: str, ini: int) -> bool:
     return bool(_CTX.search(ventana.lower()))
 
 
+_ANTES_ANIO = (
+    # "hace dos años, en 2024" / "hace 2 años, desde el 2024": se reemplaza todo el giro
+    (re.compile(r"hace\s+\S+\s+años?,?\s+(?:en|desde)(?:\s+el)?\s+$", re.I), 0),
+    # "desde el 2021" -> "desde hace unos años" (solo "el 2021")
+    (re.compile(r"(?<=desde\s)el\s+$", re.I), 0),
+    # "en el 2024" -> "hace unos años"
+    (re.compile(r"\ben\s+el\s+$", re.I), 0),
+)
+
+
 def anios_vinculacion(s: str) -> list:
-    """[(ini, fin, año)] de los años que hablan de la vinculación."""
-    return [(m.start(), m.end(), int(m.group())) for m in _ANIO.finditer(s) if _anio_con_contexto(s, m.start())]
+    """[(ini, fin, año)] de los años que hablan de la vinculación. El tramo incluye giros como
+    "en el 2024" o "hace dos años, en 2024" para que quede "hace unos años" completo."""
+    out = []
+    for m in _ANIO.finditer(s):
+        if not _anio_con_contexto(s, m.start()):
+            continue
+        ini = m.start()
+        previo = s[max(0, ini - 60):ini]
+        for rx, _ in _ANTES_ANIO:
+            x = rx.search(previo)
+            if x:
+                ini = ini - len(previo) + x.start()
+                break
+        out.append((ini, m.end(), int(m.group())))
+    return out
 
 
 # ------------------------------------------------------------------ maestro
@@ -210,9 +235,12 @@ class _Persona:
 
 # ------------------------------------------------------------------ tuplas sin nombre
 class Tuplas:
-    """Detecta (oficio + lugar + año) u (oficio + barrio) sin nombre y cuenta clientes del maestro."""
+    """Detecta (oficio + lugar + año) u (oficio + barrio) sin nombre y cuenta clientes del maestro.
+    Tres alcances: la frase del oficio y sus vecinas (`spans`, k < K incluido 0), la unidad completa
+    (un hilo de chat, un doc o una fila: `spans_unidad`, solo si la combinación existe: 1 <= k < K)
+    y las tuplas de empleados (cargo + barrio + año de ingreso)."""
 
-    def __init__(self, maestro, pseudo, k=K):
+    def __init__(self, maestro, pseudo, k=K, empleados=None):
         self.m, self.pseudo, self.k = maestro, pseudo, k
         oficios = {o for o in (c["ocupacion"] for c in maestro) if o} | set(pseudo.sectores)
         self.var = {}
@@ -227,9 +255,16 @@ class Tuplas:
         self.rx_bar = _alt(self.barrios)
         self.ciudades = {plano(c["ciudad"]): c["ciudad"] for c in maestro if c["ciudad"]}
         self.rx_ciu = _alt(self.ciudades)
+        self.emp = [{"cargo": plano(e.get("cargo", "")), "ciudad": plano(e.get("ciudad", "")),
+                     "ciudad_txt": e.get("ciudad", ""), "ingreso": _anio_de(e.get("ingreso"))}
+                    for e in (empleados or []) if e.get("cargo")]
+        self.rx_cargo = _alt({e["cargo"] for e in self.emp})
 
     def contar(self, ofi=None, barrio=None, ciudad=None, anio=None) -> int:
-        n = 0
+        return len(self._filtrar(ofi, barrio, ciudad, anio))
+
+    def _filtrar(self, ofi=None, barrio=None, ciudad=None, anio=None) -> list:
+        res = []
         for c in self.m:
             if ofi is not None and canon(c["ocupacion"]) != ofi:
                 continue
@@ -239,8 +274,8 @@ class Tuplas:
                 continue
             if anio is not None and c["anio"] != anio:
                 continue
-            n += 1
-        return n
+            res.append(c)
+        return res
 
     def _sector_de(self, canon_oficio: str) -> str:
         for k, v in self.pseudo.sectores.items():
@@ -248,6 +283,21 @@ class Tuplas:
                 return v
         return self.pseudo.sector_defecto
 
+    def _ciudad_de_barrio(self, barrio, ofi=None, anio=None, ciudad_txt=None, mencionadas=()):
+        """Ciudad a la que pertenece un barrio: la del maestro si es única, si no la de los clientes que
+        casan con la tupla, si no la única ciudad mencionada en el texto."""
+        cs = self.barrios.get(barrio, set())
+        if len(cs) == 1:
+            return next(iter(cs))
+        if ciudad_txt and ciudad_txt in {plano(c) for c in cs}:
+            return self.ciudades.get(ciudad_txt)
+        casan = {c["ciudad"] for c in self._filtrar(ofi, barrio, None, anio)}
+        if len(casan) == 1:
+            return next(iter(casan))
+        ment = [c for c in cs if plano(c) in set(mencionadas)]
+        return ment[0] if len(ment) == 1 else None
+
+    # ---------------------------------------------------------------- alcance: frase y vecinas
     def detectar(self, s: str, ancla=None):
         """Tupla en la ventana `s` (la frase del oficio y sus vecinas): dict o None.
         `ancla` = (ini, fin) restringe el oficio a ese tramo de `s`."""
@@ -280,11 +330,7 @@ class Tuplas:
         o, b, c, a = t["oficio"], t["barrio"], t["ciudad"], t["anio"]
         res = [(o[0] + base, o[1] + base, _capitaliza(s[o[0]], self._sector_de(o[2])), "ocupacion", t["k"], t["tipo"])]
         if b:
-            if c:
-                ciudad = self.ciudades.get(c[2])
-            else:
-                cs = self.barrios.get(b[2], set())
-                ciudad = next(iter(cs)) if len(cs) == 1 else None
+            ciudad = self._ciudad_de_barrio(b[2], o[2], a[2] if a else None, c[2] if c else None)
             if ciudad and plano(ciudad) != b[2]:
                 res.append((b[0] + base, b[1] + base, ciudad, "barrio", t["k"], t["tipo"]))
         if a:
@@ -302,6 +348,87 @@ class Tuplas:
             fin = segs[min(i + 1, len(segs) - 1)][0] + len(segs[min(i + 1, len(segs) - 1)][1])
             res += self.spans_ventana(texto[ini:fin], ini, ancla=(b - ini, b - ini + len(sg)))
         return res
+
+    # ---------------------------------------------------------------- alcance: toda la unidad
+    def spans_unidad(self, items) -> dict:
+        """items = [(clave, texto)] de una unidad (hilo de chat, doc o fila). Devuelve
+        {clave: [(ini, fin, nuevo, tipo, k, regla)]}. Une oficio, barrio y año aunque estén en mensajes
+        distintos del mismo hilo; solo actúa si la combinación existe en el maestro (1 <= k < K)."""
+        ofi, bar, ciu, yrs, cargos = [], [], [], [], []
+        for clave, s in items:
+            if not s:
+                continue
+            p = _p(s)
+            if self.rx_ofi:
+                ofi += [(clave, m.start(), m.end(), self.var[m.group()], s) for m in self.rx_ofi.finditer(p)]
+            if self.rx_bar:
+                bar += [(clave, m.start(), m.end(), m.group()) for m in self.rx_bar.finditer(p)]
+            if self.rx_ciu:
+                ciu += [(clave, m.start(), m.end(), m.group()) for m in self.rx_ciu.finditer(p)]
+            yrs += [(clave, a, b, y) for a, b, y in anios_vinculacion(s)]
+            if self.rx_cargo:
+                cargos += [(clave, m.start(), m.end(), m.group()) for m in self.rx_cargo.finditer(p)]
+        out: dict = {}
+        hechos: set = set()
+
+        def poner(clave, a, b, nuevo, tipo, k, regla):
+            if (clave, a, b) not in hechos:
+                hechos.add((clave, a, b))
+                out.setdefault(clave, []).append((a, b, nuevo, tipo, k, regla))
+
+        ciudades_unidad = {c[3] for c in ciu}
+        O, B, Y = {x[3] for x in ofi}, {x[3] for x in bar}, {x[3] for x in yrs}
+        combos = []
+        for o in sorted(O):
+            for b in sorted(B):
+                for y in sorted(Y):
+                    combos.append((o, b, None, y))
+            for c in sorted(ciudades_unidad):
+                for y in sorted(Y):
+                    combos.append((o, None, c, y))
+            for b in sorted(B):
+                combos.append((o, b, None, None))
+        for o, b, c, y in combos:
+            k = self.contar(o, b, c, y)
+            if not (1 <= k < self.k):
+                continue
+            regla = "hilo_" + ("oficio_barrio_anio" if b and y else "oficio_lugar_anio" if y else "oficio_barrio")
+            for clave, a, bb, oo, s in ofi:
+                if oo == o:
+                    poner(clave, a, bb, _capitaliza(s[a], self._sector_de(o)), "ocupacion", k, regla)
+            if b:
+                ciudad = self._ciudad_de_barrio(b, o, y, None, ciudades_unidad)
+                if ciudad and plano(ciudad) != b:
+                    for clave, a, bb, bn in bar:
+                        if bn == b:
+                            poner(clave, a, bb, ciudad, "barrio", k, regla)
+            if y:
+                for clave, a, bb, yy in yrs:
+                    if yy == y:
+                        poner(clave, a, bb, HACE, "anio", k, regla)
+        # empleados: cargo + barrio + año de ingreso ("agente de soporte ... vive en El Prado ... desde 2024")
+        if self.emp and cargos and bar and yrs:
+            for cg in sorted({x[3] for x in cargos}):
+                for b in sorted(B):
+                    for y in sorted(Y):
+                        cs = {plano(c) for c in self.barrios.get(b, set())}
+                        ment = {c for c in cs if c in ciudades_unidad}
+                        cand = [e for e in self.emp if e["cargo"] == cg and e["ingreso"] == y
+                                and e["ciudad"] in (ment or cs)]
+                        if not (1 <= len(cand) < self.k):
+                            continue
+                        ciudades = {e["ciudad_txt"] for e in cand}
+                        if len(ciudades) != 1:
+                            continue
+                        ciudad = next(iter(ciudades))
+                        regla = "empleado_cargo_barrio_anio"
+                        for clave, a, bb, bn in bar:
+                            if bn == b:
+                                poner(clave, a, bb, ciudad, "barrio", len(cand), regla)
+                        for clave, a, bb, yy in yrs:
+                            if yy == y:
+                                poner(clave, a, bb, HACE, "anio", len(cand), regla)
+        return out
 
 
 def segmentos(s: str):
@@ -357,7 +484,20 @@ def aplicar(records, entidades, pseudo, k: int = K):
         pr = _Persona(e, pseudo)
         for rid in e.records:
             por_registro.setdefault(rid, []).append(pr)
-    tuplas = Tuplas(maestro, pseudo, k)
+    empleados = [r["columns"] for r in records if r.get("table") == "empleados" and isinstance(r.get("columns"), dict)]
+    tuplas = Tuplas(maestro, pseudo, k, empleados)
+
+    # unidades: un hilo de chat completo, o un doc / fila / pqr con todos sus campos libres
+    unidades: dict = {}
+    for r in records:
+        for cont, clave, ruta, s in campos_libres(r):
+            if s:
+                u = ("hilo", r["thread_id"]) if "thread_id" in r else ("reg", r.get("id"))
+                unidades.setdefault(u, []).append(((r.get("id"), ruta), s))
+    de_unidad: dict = {}
+    for items in unidades.values():
+        for clave, lista in tuplas.spans_unidad(items).items():
+            de_unidad[clave] = lista
 
     for r in records:
         personas = por_registro.get(r.get("id"), [])
@@ -369,6 +509,8 @@ def aplicar(records, entidades, pseudo, k: int = K):
             for pr in personas:
                 spans += [(a, b, n, t, who, "persona", None) for a, b, n, t, who in pr.spans(s, p)]
             for a, b, n, t, kk, tipo in tuplas.spans(s):
+                spans.append((a, b, n, t, None, tipo, kk))
+            for a, b, n, t, kk, tipo in de_unidad.get((r.get("id"), ruta), []):
                 spans.append((a, b, n, t, None, tipo, kk))
             if not spans:
                 continue
