@@ -58,6 +58,13 @@ def _es_emp(G, eid):
 RX_RADICADO_LINEA = re.compile(r"\bPQR-\d{4}-\d{3,5}\b")
 CANALES_INTERNOS = ("general", "escalamientos", "fraude-interno", "migracion-pagalo")
 RX_OBRA = re.compile(r"isaacs|novela|campana|edicion|homenaje|tributo")
+OFICIOS = {
+    "periodista": re.compile(r"\b(?:publico|publica|publicara|entrevista\w*|reportaje|columna|cronica|articulo)\b"),
+    "abogad": re.compile(r"\b(?:demanda|juzgado|tutela|audiencia|litigio)\b"),
+    "medic": re.compile(r"\b(?:pacientes?|consultorio|cirugia|turno en la clinica)\b"),
+    "contador": re.compile(r"\b(?:declaracion de renta|contabilidad|balances?|revisor fiscal)\b"),
+    "arquitect": re.compile(r"\b(?:planos|licencia de construccion)\b"),
+}
 RX_TERMINA = re.compile(r"(?:terminad[oa]s?|termina|finaliza|acaba)\s+en\s+(\d{3,4})\b"
                         r"|ultim[oa]s\s+(?:cuatro\s+|4\s+|tres\s+|3\s+)?(?:digitos|numeros)\s*(?:son\s+|en\s+|:\s*)?(\d{3,4})\b")
 
@@ -482,6 +489,27 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
             if mejor >= 1 and len(gan) == 1:
                 m.entity_id = gan[0]
                 stats["aposicion"] += 1
+    # ---- fase A5: el oficio que describe la frase desempata ("Alejandra Rojas publicó la primera pieza de la
+    # serie ... va a entrevistar" es la periodista, no la agente nueva que se llama igual)
+    for rid, ms in menciones.items():
+        for m in ms:
+            if m.kept or m.tipo != "nombre" or m.entity_id is not None:
+                continue
+            cs = [c for c in dict.fromkeys(m.cands) if c in G and not G[c].kept]
+            if len(cs) < 2:
+                continue
+            frase = F.plano((m.izq or "")[-60:] + " " + (m.der or "")[:140])
+            gan = []
+            for c in cs:
+                a = G[c].atributos
+                oficio = F.plano((a.get("ocupacion") or a.get("cargo") or "")).strip()
+                for raiz, rx in OFICIOS.items():
+                    if oficio.startswith(raiz) and rx.search(frase):
+                        gan.append(c)
+                        break
+            if len(gan) == 1:
+                m.entity_id = gan[0]
+                stats["oficio"] += 1
     # autores cuentan como presencia en su hilo
     # ---- fase B: ambiguas con candidatos (varias vueltas: lo resuelto aporta evidencia)
     for vuelta in range(2):
