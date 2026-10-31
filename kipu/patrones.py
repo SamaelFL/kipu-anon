@@ -16,13 +16,13 @@ RX_NUM_LARGO = re.compile(r"(?<![\d.])\d{7,10}(?![\d]|\.\d)")
 RX_PLACA = re.compile(r"(?<![a-z0-9])([a-z]{3})([\- ]?)(\d{3})(?![a-z0-9])")
 RX_PASAPORTE = re.compile(r"(?<![a-z0-9])[a-z]{2}\d{6}(?![a-z0-9])")
 RX_CREDITO = re.compile(r"(?<![\d])4471[\-\s]?\d{4}(?![\d])")
-_VIA = (r"(?:calle|cll|cl|carrera|cra|cr|kr|kra|transversal|trans|tv|tr|diagonal|diag|dg|avenida|av|"
+_VIA = (r"(?:calle|cll|cl|carrera|cra|cr|kr|kra|transversal|transv|trans|trv|tv|tr|diagonal|diag|dg|avenida|av|"
         r"autopista|circular|circunvalar)\.?")
 _COMP = (r"(?:apto|apartamento|casa|of|oficina|int|interior|torre|piso|local|bodega|manzana|mz)\.?"
          r"\s*\d+[a-z]?")
 RX_DIRECCION = re.compile(
     rf"(?<![a-z0-9]){_VIA}\s*\d+[a-z]?(?:\s+bis)?(?:\s+(?:sur|norte|este|oeste))?(?:\s+[a-z](?![a-z]))?"
-    rf"\s*(?:#|no\.?|n°|nro\.?)\s*\d+[a-z]?(?:\s+bis)?\s*-\s*\d+(?:\s+(?:sur|norte|este|oeste))?"
+    rf"\s*(?:#|no\.?|n°|nro\.?|numero|num\.?)\s*\d+[a-z]?(?:\s+bis)?(?:\s*-\s*|\s+)\d+(?:\s+(?:sur|norte|este|oeste))?"
     rf"(?:\s*,?\s*{_COMP})*")
 RX_HONORIFICO = re.compile(r"(?<![a-z])(senor(?:a|es|as)?|sr\.?|sra\.?|srta\.?|senorita|dr\.?|dra\.?|doctor(?:a)?|"
                            r"don|dona|doc)\s+")
