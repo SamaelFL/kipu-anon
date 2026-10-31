@@ -25,4 +25,5 @@ def message_record(canal, m, authors):
         "ts": ts,
         "text": m.get("text", ""),
         "attachments": [{"filename": f.get("name", "")} for f in (m.get("files") or [])],
+        "_uid": m.get("user"),   # interno: el pipeline lo quita antes de escribir
     }
