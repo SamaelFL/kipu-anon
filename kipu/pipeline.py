@@ -30,6 +30,8 @@ try:
 except Exception:                       # noqa: BLE001
     llm = None
 
+import re as _re
+P_HON = _re.compile(r"(?:senor(?:a|es|as)?|sr\.?|sra\.?|srta\.?|senorita|dr\.?|dra\.?|doctor(?:a)?|don|dona)\s+$")
 FILES = ("chats.jsonl", "docs.jsonl", "tables.jsonl", "entities.json")
 SECRETO_DEV = "kipu-dev-secreto-no-usar-en-produccion"
 
@@ -114,6 +116,23 @@ class Motor:
         return None
 
 
+def _texto_campo(r, campo):
+    if not r:
+        return None
+    if campo == "text":
+        return r.get("text")
+    if campo.startswith("columns."):
+        return (r.get("columns") or {}).get(campo[8:])
+    if campo.startswith("metadata."):
+        return (r.get("metadata") or {}).get(campo[9:])
+    if campo.startswith("attachments."):
+        try:
+            return r["attachments"][int(campo.split(".")[1])]["filename"]
+        except (KeyError, IndexError, ValueError):
+            return None
+    return r.get(campo)
+
+
 def _recall_con_corte(records, menciones, G, corte):
     """llm.recall sobre un lote, con corte duro: si no responde a tiempo se sigue con reglas."""
     if llm is None or not os.environ.get("OPENROUTER_API_KEY") or os.environ.get("KIPU_SIN_LLM"):
@@ -135,16 +154,38 @@ def _recall_con_corte(records, menciones, G, corte):
         return []
     ex.shutdown(wait=False)
     out = []
+    por = {r["id"]: r for r in records}
     for ml in res:
-        m = _desde_llm(ml, G)
+        m = _desde_llm(ml, G, _texto_campo(por.get(ml.record_id), ml.campo))
         if m is not None:
             out.append(m)
     return out
 
 
-def _desde_llm(ml, G):
+def _suelto_ambiguo(ml, G, texto):
+    """Mención de un solo token que es apellido o lugar del gazetteer, sin nombre ni honorífico al lado."""
+    tk = grafo_mod.toks(ml.texto)
+    if len(tk) != 1:
+        return False
+    D = detecta.detector(G)
+    t = tk[0]
+    es_lugar = (t,) in D.lugares or t in D.place_tok or (t,) in D.kept_idx
+    es_ape = t in D.surnames or any(tp == "ap" for tp in (G.formas_idx.get((t,)) or {}).values())
+    if not (es_lugar or es_ape):
+        return False
+    if texto:
+        from .texto import norm
+        izq = norm(texto[max(0, ml.ini - 24):ml.ini])
+        if P_HON.search(izq):
+            return False
+    return True
+
+
+def _desde_llm(ml, G, texto=None):
     """MencionLLM validada -> Mencion del pipeline (persona nueva o forma conocida)."""
     if getattr(ml, "clase", "persona") not in ("persona", "tercero"):
+        return None
+    if _suelto_ambiguo(ml, G, texto):
         return None
     m = Mencion(ml.record_id, ml.campo, ml.ini, ml.fin, ml.texto, "nombre", None, "llm")
     tk = grafo_mod.toks(ml.texto)
@@ -198,7 +239,9 @@ def _entidades_json(G, rz, salida, menciones):
                 ps[k] = v
         if not ps:
             continue
-        originals = sorted({f for f in e.formas if isinstance(f, str) and f.strip()})
+        originals = sorted({f for f in rz.vistas.get(e.entity_id, ()) if isinstance(f, str) and f.strip()})
+        if not originals:
+            continue
         ents.append({"entity_id": e.entity_id, "type": "person", "originals": originals, "pseudonyms": ps,
                      "records": recs})
     return ents
@@ -253,7 +296,7 @@ def run(source, out_dir, state_dir=None):
             unidades = llm.unidades_de([_publico(r) for r in records])
             conocidas = [m for ms in menciones.values() for m in ms]
             for ml in llm.recall(unidades, conocidas):
-                m = _desde_llm(ml, G)
+                m = _desde_llm(ml, G, _texto_campo(rec_map.get(ml.record_id), ml.campo))
                 if m is not None:
                     menciones.setdefault(m.record_id, []).append(m)
         except Exception as e:  # noqa: BLE001

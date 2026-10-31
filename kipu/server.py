@@ -170,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
         tok = os.environ.get("TEAM_TOKEN")
         h = self.headers.get("Authorization")
         if not tok or not h:
-            return True
+            return False
         m = re.fullmatch(r"Bearer\s+(.+)", h.strip(), re.I)
         return bool(m) and hmac.compare_digest(m.group(1).encode(), tok.encode())
 
@@ -275,6 +275,9 @@ class Server(ThreadingHTTPServer):
 
 
 def serve(port):
+    if not os.environ.get("TEAM_TOKEN"):
+        log("TEAM_TOKEN no está definido: el servicio no arranca")
+        raise SystemExit(2)
     Handler.jobs = Jobs()
     srv = Server(("0.0.0.0", port), Handler)
     log("escuchando en :%d, DATA_DIR=%s" % (port, data_dir()))

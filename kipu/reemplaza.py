@@ -43,6 +43,7 @@ class Reemplazador:
         self.nac_reales = {iso for e in G.values() for iso in e.ids.get("nacimientos", [])}
         self.uso: dict = {}            # eid -> {name,email,phone,...}
         self.kept_vistos: dict = {}    # eid -> True
+        self.vistas: dict = {}         # eid -> formas reales que sí se reemplazaron
 
     # ------------------------------------------------------------ personas
     def reales(self, eid):
@@ -187,6 +188,10 @@ class Reemplazador:
             nuevo = ps.pasaporte(t)
             self._uso(eid, "passport", nuevo)
             return nuevo
+        if tipo == "credito" and m.forma == "cuenta":
+            nuevo = ps.cedula(t)       # mismos grupos y separadores; todos los dígitos cambian
+            self._uso(eid, "account", nuevo)
+            return nuevo
         if tipo == "credito":
             nuevo = ps.credito(t)
             self._uso(eid, "account", nuevo)
@@ -228,6 +233,8 @@ class Reemplazador:
                 nuevo = self.reemplazo(m, m.entity_id)
                 if nuevo is None:
                     continue
+                if m.entity_id and nuevo != texto[m.ini:m.fin]:
+                    self.vistas.setdefault(m.entity_id, set()).add(texto[m.ini:m.fin])
                 partes.append(texto[pos:m.ini])
                 partes.append(nuevo)
                 pos = m.fin
@@ -266,4 +273,7 @@ class Reemplazador:
             return a
         if eid is None or eid not in self.G or self.G[eid].kept:
             return a
-        return self.nombre(eid, a)
+        nuevo = self.nombre(eid, a)
+        if nuevo != a:
+            self.vistas.setdefault(eid, set()).add(a)
+        return nuevo

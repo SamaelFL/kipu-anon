@@ -413,6 +413,19 @@ class Detector:
                 tomar(m, "cedula", 89, "cedula", [e], "grafo")
             elif 6 <= len(d) <= 10 and P.CUE_CEDULA.search(izq) and not (len(d) == 10 and d.startswith("3")):
                 tomar(m, "cedula", 80, "cedula")
+        # números de cuenta: "cuenta 9120 9765 655"
+        for m in re.finditer(r"(?:cuenta|cta|account|acct)[a-z]*\.?\s*(?:n[o°º.]*\s*|numero\s*|#\s*|de ahorros?\s*|corriente\s*)?"
+                             r"(\d(?:[ \-.]?\d){7,17})(?!\d)", n):
+            a0, b0 = m.start(1), m.end(1)
+            if any(a0 < y and x < b0 for x, y in usados):
+                continue
+            d = re.sub(r"\D", "", m.group(1))
+            if d.startswith("4471") and len(d) == 8:
+                continue
+            a, b = o(a0, b0)
+            e = G.buscar("cedula", d) or G.buscar("celular", d)
+            add(a, b, "credito", [e] if e else [], "grafo" if e else "regla", 93, forma="cuenta")
+            usados.append((a0, b0))
         # placas y pasaportes
         for m in P.RX_PLACA.finditer(n):
             if any(m.start() < y and x < m.end() for x, y in usados):
