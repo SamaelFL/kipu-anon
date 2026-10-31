@@ -105,6 +105,7 @@ class Pseudonimizador:
 
         # números y nombres reales a evitar
         self._grams: set = set()
+        self._completos: set = set()  # números reales completos (solo dígitos, 6+)
         self._reales_norm: set = set()
         self.agregar_formas_reales(formas_reales)
 
@@ -125,6 +126,11 @@ class Pseudonimizador:
                 d = re.sub(r"\D", "", f)
                 for j in range(len(d) - 5):
                     self._grams.add(d[j:j + 6])
+                if len(d) >= 6:
+                    self._completos.add(d)
+                    m = re.fullmatch(r"\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\s*", f)
+                    if m:  # la fecha también puede aparecer día-mes-año
+                        self._completos.add(f"{int(m[3]):02d}{int(m[2]):02d}{m[1]}")
                 alnum = re.sub(r"[^A-Za-z0-9]", "", f).upper()
                 if re.fullmatch(r"[A-Z]{3}\d{2}[\dA-Z]|[A-Z]{2}\d{6}", alnum):
                     self._reales_norm.add(alnum.lower())
@@ -239,13 +245,35 @@ class Pseudonimizador:
                 return False
         return True
 
-    def _intentar(self, llave: str, campo: str, gen, original_digitos: str, max_i: int = 400):
-        ultimo = None
+    @staticmethod
+    def _alnum(s: str) -> str:
+        return re.sub(r"[^A-Za-z0-9]", "", s).upper()
+
+    @staticmethod
+    def _cambiar_ultimo(s: str) -> str:
+        """Fuerza un valor distinto: sube en uno el último dígito (o letra) del texto."""
+        for i in range(len(s) - 1, -1, -1):
+            c = s[i]
+            if c.isdigit():
+                return s[:i] + str((int(c) + 1) % 10) + s[i + 1:]
+            if c.isalpha() and c.isascii():
+                return s[:i] + (chr(ord(c) + 1) if c not in "zZ" else "A" if c == "Z" else "a") + s[i + 1:]
+        return s + "1"
+
+    def _intentar(self, llave: str, campo: str, gen, original_digitos: str, max_i: int = 400, original_txt=None):
+        """Primer candidato lejos del original y de los reales; si se agota, uno distinto del original."""
+        cmp_ = self._alnum(original_txt if original_txt is not None else original_digitos)
+        distinto = None
         for i in range(max_i):
-            ultimo = gen(self._flujo(llave, campo, i))
-            if self._lejos(re.sub(r"\D", "", ultimo), original_digitos):
-                return ultimo
-        return ultimo
+            cand = gen(self._flujo(llave, campo, i))
+            if self._alnum(cand) == cmp_:
+                continue
+            if self._lejos(re.sub(r"\D", "", cand), original_digitos):
+                return cand
+            distinto = distinto or cand
+        if distinto is None:
+            distinto = self._cambiar_ultimo(gen(self._flujo(llave, campo, 0)))
+        return distinto
 
     def cedula(self, original: str) -> str:
         d = re.sub(r"\D", "", original)
@@ -285,6 +313,9 @@ class Pseudonimizador:
             s = gen(self._flujo(alnum, "placa", i))
             if s != alnum and s.lower() not in reales and self._lejos(re.sub(r"\D", "", s), re.sub(r"\D", "", alnum)):
                 break
+        else:
+            if s == alnum:
+                s = self._cambiar_ultimo(s)
         out, k = [], 0
         for c in original:
             if c.isalnum():
@@ -303,7 +334,7 @@ class Pseudonimizador:
         def gen(fl):
             return fl.elegir(LETRAS) + fl.elegir(LETRAS) + fl.digitos(nd, True)
 
-        s = self._intentar(alnum, "pasaporte", gen, d)
+        s = self._intentar(alnum, "pasaporte", gen, d, original_txt=alnum)
         return s.lower() if original.islower() else s
 
     def credito(self, original: str) -> str:
@@ -343,6 +374,9 @@ class Pseudonimizador:
             resto = gen(self._flujo(original, "credito", i))
             if resto != orig_resto and self._lejos(re.sub(r"\D", "", fijo + resto), re.sub(r"\D", "", orig_resto)):
                 break
+        else:
+            if resto == orig_resto:
+                resto = self._cambiar_ultimo(resto)
         return armar(resto)
 
     def direccion(self, original: str) -> str:
@@ -377,6 +411,9 @@ class Pseudonimizador:
             r = re.sub(r"(?<=\d)[A-Ea-e](?![A-Za-z])", letra, r)
             if r != original and self._lejos(re.sub(r"\D", "", r), orig_d):
                 break
+        else:
+            if r == original:
+                r = self._cambiar_ultimo(r) if re.search(r"\d", r) else r + " apto 101"
         return r
 
     @staticmethod
@@ -403,11 +440,23 @@ class Pseudonimizador:
                 orden, ancho, sep = "texto", False, " "
         try:
             base = dt.date(y, mo, d)
-        except ValueError:
-            return original
-        fl = self._flujo(base.isoformat(), "nacimiento")
-        dias = 365 + fl.rango(1461)
-        nueva = base + dt.timedelta(days=dias if fl.rango(2) else -dias)
+        except ValueError:  # fecha imposible (30 de febrero): se corrige para poder cambiarla
+            try:
+                base = dt.date(y, min(max(mo, 1), 12), min(max(d, 1), 28))
+            except ValueError:
+                return original
+        orig8 = base.strftime("%Y%m%d")
+        nueva = None
+        for i in range(400):
+            fl = self._flujo(base.isoformat(), "nacimiento", i)
+            dias = 365 + fl.rango(1461)
+            cand = base + dt.timedelta(days=dias if fl.rango(2) else -dias)
+            ymd, dmy = cand.strftime("%Y%m%d"), cand.strftime("%d%m%Y")
+            if cand != base and ymd != orig8 and ymd not in self._completos and dmy not in self._completos:
+                nueva = cand
+                break
+        if nueva is None:  # agotado: un año y un día después, siempre distinto
+            nueva = base + dt.timedelta(days=366)
 
         def f(v):
             return str(v).zfill(2) if ancho else str(v)
@@ -467,7 +516,10 @@ class Pseudonimizador:
             "nombre.ap.ap2": f"{nom}.{ap}.{ap2}" if ap2 else f"{nom}.{ap}",
             "nombreapap2": nom + ap + ap2,
         }[estilo]
-        return f"{nuevo}{cola}@{dom_l}"
+        res = f"{nuevo}{cola}@{dom_l}"
+        if res.lower() == original.lower():
+            res = f"{nuevo}{cola}{1 + self._flujo(original, 'correo_x').rango(9)}@{dom_l}"
+        return res
 
     def _estilo_local(self, local: str, real) -> tuple:
         """Devuelve (estilo, dígitos finales)."""

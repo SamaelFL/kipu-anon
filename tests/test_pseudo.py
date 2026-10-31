@@ -244,6 +244,81 @@ class SinCoincidencias(unittest.TestCase):
         self.assertGreaterEqual(len(p.apellidos), 300)
 
 
+class NuncaElOriginal(unittest.TestCase):
+    FECHAS = ("1969-01-03", "1982-06-27", "1982-11-20")
+
+    def test_tres_fechas(self):
+        for secreto in ("s3", "a", "kipu-dev-secreto-no-usar-en-produccion", "x1", "x2"):
+            p, _ = nuevo(secreto, formas=self.FECHAS)
+            for d in self.FECHAS:
+                n = p.nacimiento(d)
+                self.assertRegex(n, r"^\d{4}-\d\d-\d\d$")
+                self.assertNotEqual(n, d)
+                self.assertNotEqual(n.replace("-", ""), d.replace("-", ""))
+                self.assertFalse(contiene(n, d), (n, d))
+                self.assertNotIn(n.replace("-", ""), {x.replace("-", "") for x in self.FECHAS})
+
+    def test_agotado_fuerza_distinto(self):
+        p, _ = nuevo()
+        p._lejos = lambda *a, **k: False  # nada pasa el filtro: debe forzar un valor distinto
+        p._completos = set()
+        for o in ("1107360039", "1.107.360.039", "43062949"):
+            self.assertNotEqual(re.sub(r"\D", "", p.cedula(o)), re.sub(r"\D", "", o))
+        self.assertNotEqual(p.celular("3148729552"), "3148729552")
+        self.assertNotEqual(p.placa("KFY046"), "KFY046")
+        self.assertNotEqual(p.pasaporte("AR752831"), "AR752831")
+        self.assertNotEqual(p.credito("4471-0211"), "4471-0211")
+        self.assertNotEqual(p.direccion("Cl 108 # 66-81"), "Cl 108 # 66-81")
+        self.assertNotEqual(p.nacimiento("1982-06-27"), "1982-06-27")
+
+    def test_fecha_en_el_conjunto_de_reales_se_evita(self):
+        p, _ = nuevo(formas=["1982-06-27"])
+        base = p.nacimiento("1982-06-27")
+        p2, _ = nuevo(formas=["1982-06-27", base])
+        n2 = p2.nacimiento("1982-06-27")
+        self.assertNotEqual(n2, base)
+        self.assertNotEqual(n2, "1982-06-27")
+
+    def test_todo_fuentes(self):
+        import csv
+        import io
+        base = Path(__file__).resolve().parent.parent / "fuentes" / "tables"
+        if not base.exists():
+            self.skipTest("sin fuentes/")
+        with open(base / "clientes.csv", encoding="latin-1") as f:
+            filas = list(csv.DictReader(io.StringIO(f.read()), delimiter=";"))
+        xml = (base / "empleados.xml").read_text(encoding="utf-8")
+        emp = {
+            "nac": re.findall(r"<fecha_nacimiento>(.*?)</fecha_nacimiento>", xml),
+            "doc": re.findall(r"<documento[^>]*>(.*?)</documento>", xml),
+            "cel": re.findall(r"<celular>(.*?)</celular>", xml),
+        }
+        nacs = [r["fecha_nacimiento"] for r in filas] + emp["nac"]
+        docs = [r["num_doc"] for r in filas] + emp["doc"]
+        cels = [r["celular"] for r in filas] + emp["cel"]
+        dirs = [r["direccion"] for r in filas]
+        todo = nacs + docs + cels
+        p = Pseudonimizador("fuentes-test", Path(tempfile.mkdtemp()) / "s.json", todo)
+        self.assertGreater(len(nacs), 100)
+        reales8 = {re.sub(r"\D", "", x) for x in nacs}
+        for o in nacs:
+            n = p.nacimiento(o)
+            self.assertNotEqual(n, o)
+            self.assertNotEqual(re.sub(r"\D", "", n), re.sub(r"\D", "", o))
+            self.assertNotIn(re.sub(r"\D", "", n), reales8, (n,))
+            self.assertFalse(contiene(n, o))
+        for o in docs:
+            n = p.cedula(o)
+            self.assertNotEqual(re.sub(r"\D", "", n), re.sub(r"\D", "", o))
+            self.assertFalse(contiene(n, o))
+        for o in cels:
+            n = p.celular(o)
+            self.assertNotEqual(re.sub(r"\D", "", n), re.sub(r"\D", "", o))
+            self.assertFalse(contiene(n, o))
+        for o in dirs:
+            self.assertNotEqual(p.direccion(o), o)
+
+
 class Formas(unittest.TestCase):
     real = Persona(("Manuela",), ("Castaño", "Ruiz"), "f")
     seu = Persona(("Sofía", "Elena"), ("Zambrano", "Naranjo"), "f")
