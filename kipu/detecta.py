@@ -605,7 +605,7 @@ class Detector:
 
     def _nuevos(self, add, t, n, mapa, tokens, o):
         G = self.G
-        # ---- relaciones: "mi mamá, Ignacio"
+        # ---- relaciones: "mi mamá, Rogelio"
         for m in RX_REL.finditer(t):
             nom = m.group("nombre")
             rel = F.plano(m.group("rel")).strip()

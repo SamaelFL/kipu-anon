@@ -85,14 +85,19 @@ menciones (889 persona, 20 tercero) y 30 sugerencias aparte (lugar, organizació
 Los tokens de entrada incluyen el system prompt repetido en cada llamada. Una corrida limpia vale
 unos US$0,2 y ~3 minutos; con caché, casi cero.
 
-### Corridas oficiales (llenar con las reales, `GET /run/{job_id}` → `cost`)
+### Corridas oficiales y de verificación
 
-| Corrida | Fuentes servidas | Tokens in | Tokens out | USD | Segundos | Puntaje |
-|---|---|---:|---:|---:|---:|---:|
-| 1 (60 % de tests ocultos) | `{{FUENTES_1}}` | `{{TIN_1}}` | `{{TOUT_1}}` | `{{USD_1}}` | `{{SEG_1}}` | `{{PUNTAJE_1}}` |
-| 2 (75 %) | `{{FUENTES_2}}` | `{{TIN_2}}` | `{{TOUT_2}}` | `{{USD_2}}` | `{{SEG_2}}` | `{{PUNTAJE_2}}` |
-| 3 (100 %) | `{{FUENTES_3}}` | `{{TIN_3}}` | `{{TOUT_3}}` | `{{USD_3}}` | `{{SEG_3}}` | `{{PUNTAJE_3}}` |
-| `/anonymize` (lote de hasta 50 registros) | — | `{{TIN_AN}}` | `{{TOUT_AN}}` | `{{USD_AN}}` | `{{SEG_AN}}` | — |
+`GET /run/{job_id}` devuelve `cost` con tokens y segundos. Con la caché del LLM caliente, una corrida
+completa no gasta tokens y tarda ~2 minutos; la única corrida cara es la primera después de que
+crecen las fuentes (solo las unidades nuevas van al LLM).
+
+| Corrida | Fuentes servidas | Tokens in | Tokens out | USD (tarifa medida arriba) | Segundos | Tests ocultos |
+|---|---|---:|---:|---:|---:|---|
+| 1 (60 %) | 2.028 · 26 · 6.243 | ≈0 (caché) | ≈0 | ≈0 | ~120 | 78 / 95 |
+| Primera tras Págalo (verificación propia) | 2.999 · 34 · 7.823 | 351.368 | 137.726 | ≈0,09 | 214 | — |
+| 2 (75 %) | 2.999 · 34 · 7.823 | 0 (caché) | 0 | 0 | ~120 | 130 / 156 |
+| 3 (100 %) | 2.999 · 34 · 7.823 | 0 (caché) | 0 | 0 | ~120 | 181 / 205 |
+| `/anonymize` (1 a 4 registros) | — | 0–1.500 | 0–330 | <0,001 | 2–3 | — |
 
 Presupuesto: US$45 en total para el día, de los cuales US$5 están reservados para el set oculto.
 Las corridas oficiales gastan de esa reserva; por eso el modelo es barato y la caché evita repetir
@@ -102,8 +107,7 @@ unidades. Si el LLM no responde, el pipeline sigue con reglas (no se cae ni camb
 
 ## Decisiones
 
-Horas de la jornada; las marcadas `{{HH:MM}}` se llenan con la hora real del commit
-(`git log --format='%h %ad %s' --date=format:%H:%M`).
+Horas de la jornada (hora del commit, `git log --format='%h %ad %s' --date=format:%H:%M`).
 
 | Hora | Decisión | Alternativa descartada y por qué |
 |---|---|---|
@@ -115,11 +119,17 @@ Horas de la jornada; las marcadas `{{HH:MM}}` se llenan con la hora real del com
 | 10:30–12:00 | **HMAC + mapa persistido** para los seudónimos: determinista, mismo género, mismo patrón, nunca igual a una persona real; el mapa vive en el volumen | Seudónimos al azar: rompen la consistencia entre corridas, y el 70 % del puntaje es la corrida posterior al crecimiento de las fuentes |
 | 10:30–12:00 | **Generalizar siempre, ligado a la persona** (maestro: oficio, barrio, dirección, nacimiento; texto: los cuasi-identificadores de esa persona), más tuplas sin nombre | k-anonimato condicional: se cruza entre fuentes y se aleja de la salida ideal |
 | 10:30–12:00 | **Juez local + ataque de enlace**: `evals/` replica `validar.mjs`, mide con la muestra, los tests públicos y una batería de trampas sacada del corpus | Iterar a ciegas con 3 corridas |
-| `{{HH:MM}}` | **Defensas contra prompt injection** (diseño, sección 5): el LLM no tiene tools ni red; solo puede *agregar* detecciones; cada span se valida en código (existe literal en ese registro y campo, tipo en el enum, ≤ 80 caracteres); el texto viaja como JSON en el mensaje de usuario y la política en el system; NFKC e invisibles/confusables fuera antes de enviar; `conservado` exige gazetteer o lista curada y no estar en el grafo; canarios de inyección en `evals/` | Confiar en que el prompt "resista": las defensas probabilísticas se rompen con atacantes adaptativos |
-| `{{HH:MM}}` | **Token del equipo obligatorio en todas las rutas excepto `GET /health`** (comparación en tiempo constante) | Rutas abiertas: `/entities` contiene las formas originales, así que jamás puede ser público |
-| `{{HH:MM}}` | **SSRF cerrado en `/run`**: solo `https`, IP pública, sin redirecciones, conexión fijada a la IP validada | Aceptar cualquier `sources_url` |
-| `{{HH:MM}}` | **Despliegue en Railway**: 1 réplica, sin reposo, volumen en `DATA_DIR`, healthcheck en `/v1/health` | Vercel serverless: no sirve para tareas de minutos con estado |
-| `{{HH:MM}}` | **Dependencias**: ninguna. Python 3.12 con `http.server`, `urllib`, `zlib`, `hashlib`, `hmac`, `difflib`, `unittest`; Node solo para correr `validar.mjs` en local | Presidio, spaCy y similares: prohibidos por el reto y contra la regla del evento de usar la menor cantidad de librerías |
+| 11:20 · 12:04 | **Defensas contra prompt injection** (diseño, sección 5): el LLM no tiene tools ni red; solo puede *agregar* detecciones; cada span se valida en código (existe literal en ese registro y campo, tipo en el enum, ≤ 80 caracteres); el texto viaja como JSON en el mensaje de usuario y la política en el system; NFKC e invisibles/confusables fuera antes de enviar; `conservado` exige gazetteer o lista curada y no estar en el grafo; canarios de inyección en `evals/` | Confiar en que el prompt "resista": las defensas probabilísticas se rompen con atacantes adaptativos |
+| 12:50 → 13:19 | **Autenticación configurable (`KIPU_AUTH`).** Primero el token era obligatorio salvo `/health`; la validación oficial respondió 401 y el log mostró que el evaluador no manda cabecera, y el contrato del participante dice "sin autenticación". Quedó apagada por defecto con modo `estricto` disponible, comparación en tiempo constante y log de cabecera sí/no sin valores | Mantener el token: el evaluador no podía correr. Riesgo aceptado y documentado: `/entities` es público mientras el contrato lo exija |
+| 11:57 | **SSRF cerrado en `/run`**: solo `https`, IP pública, sin redirecciones, conexión fijada a la IP validada | Aceptar cualquier `sources_url` |
+| 11:53 | **Despliegue en Railway**: 1 réplica, sin reposo, volumen en `DATA_DIR`, healthcheck en `/v1/health` | Vercel serverless: no sirve para tareas de minutos con estado |
+| 11:53 | **Dependencias**: ninguna. Python 3.12 con `http.server`, `urllib`, `zlib`, `hashlib`, `hmac`, `difflib`, `unittest`; Node solo para correr `validar.mjs` en local | Presidio, spaCy y similares: prohibidos por el reto y contra la regla del evento de usar la menor cantidad de librerías |
+| 13:24 | **Corrida 1** (78/95). Las fallas de consistencia venían de dos causas: el nombre tras "mi mamá," se tomaba como tercero y `entities.records` listaba miles de transacciones donde no aparece el seudónimo. Se corrigió (13:39–13:53) | Gastar otra corrida sin diagnóstico |
+| 15:00–15:45 | **Incidente INC-PII-01 (Págalo).** El canario de `record_index` (cada 5 min, ETag) seguía en 304; el staff confirmó un error de su lado; al servir los datos nuevos se espejaron con `evals/bajar_fuentes.py` y se midió el cambio. Ver `docs/incidente.md` | Lanzar `/run` en Railway sin medir: el código viejo sobre datos nuevos habría sobrescrito el grafo del volumen |
+| 16:14 | **Personas viejas anclan su enlace y sus seudónimos declarados**: el grafo anterior (en el volumen) fija el usuario de Slack de cada persona aunque su perfil cambie; `PG-` y `CL-` con la misma cédula son la misma persona; un seudónimo ya entregado se conserva si los datos nuevos solo traen números parecidos | Recalcular todo desde cero: 3 usuarios viejos cambiaban de persona y 191 seudónimos se movían en la primera prueba local |
+| 16:27 | **Corrida 2** (130/156) | — |
+| 16:50–17:39 | **Revisión manual caso por caso** de las fallas de consistencia y homónimos: radicado en la misma línea, solo el nombre más cercano, últimos dígitos de la cédula, cargo o ciudad en aposición, oficio descrito en la frase, empleado único por nombre de pila en canales internos, obra literaria "María" intacta, cédula tras "ID No.", nombre partido por salto de línea, números por letras y direcciones con "número". Cada cambio movió solo los registros esperados (comparación contra la corrida anterior) | Cambios amplios sin verificar registro por registro |
+| 17:48 | **Corrida 3** (181/205, directa 0 fallas) | — |
 
 ### Trade-offs del doc de diseño
 
@@ -141,6 +151,10 @@ Horas de la jornada; las marcadas `{{HH:MM}}` se llenan con la hora real del com
 ### Límites conocidos
 
 - Un tercero que solo aparece con nombre de pila y sin ninguna evidencia queda como persona aparte.
+- Terminaciones parciales ("cédula terminada en 1234") se usan para desempatar pero no se enmascaran.
+- Un nombre con dos trucos a la vez (número por letra y letra extra) puede quedar sin reemplazar.
+- Una fecha de nacimiento declarada cambió entre corridas porque su seudónimo viejo coincidía con la
+  fecha real de una persona nueva: ahí la privacidad le gana a la consistencia.
 - Los tests ocultos usan mecanismos distintos de los públicos; el juez local es una estimación
   (aproximada), no una garantía del puntaje.
 - La heurística de género de nombres nuevos y la lista curada de figuras públicas son finitas.

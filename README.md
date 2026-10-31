@@ -114,19 +114,22 @@ partes que son aproximadas están marcadas; un 100 local no garantiza 100 en los
 
 ## Resultados
 
-Marcadores para llenar con las corridas reales (detalle de tokens y costo en `DECISIONS.md`).
+Set oculto oficial (tests que pasan; la plataforma solo muestra números por categoría).
 
-| | Local (muestra) | Corrida 1 | Corrida 2 | Corrida 3 |
+| Corrida | Fuentes | Tests que pasan | Fallas por familia | Tiempo de `/run` |
 |---|---|---|---|---|
-| Puntaje oficial | — | `{{PUNTAJE_1}}` | `{{PUNTAJE_2}}` | `{{PUNTAJE_3}}` |
-| Fuga (45) · Utilidad (35) · Consistencia (20) | `{{LOCAL_F}}` · `{{LOCAL_U}}` · `{{LOCAL_C}}` | `{{F_1}}` · `{{U_1}}` · `{{C_1}}` | `{{F_2}}` · `{{U_2}}` · `{{C_2}}` | `{{F_3}}` · `{{U_3}}` · `{{C_3}}` |
-| Costo y tiempo | `{{LOCAL_COSTO}}` | `{{USD_1}}` · `{{SEG_1}}` s | `{{USD_2}}` · `{{SEG_2}}` s | `{{USD_3}}` · `{{SEG_3}}` s |
+| 1 · 13:24 (60 % del set) | antes de Págalo: 2.028 chats · 26 docs · 6.243 filas | **78 / 95** (82 %) | consistencia y homónimos | ~2 min |
+| 2 · 16:30 (75 %) | con Págalo: 2.999 chats · 34 docs · 7.823 filas | **130 / 156** (83 %) | consistencia 17 · homónimos 5 · indirecta 3 · directa 1 | ~2 min |
+| 3 · 17:48 (100 %) | con Págalo | **181 / 205** (88 %): fáciles 94/94, regulares 52/68, difíciles 35/43 | consistencia 16 · indirecta 5 · homónimos 3 · **directa 0** | ~2 min |
 
-Medido con el juez local: ver `evals/out/juez_*.txt` después de `evals/run_all.sh`.
+Antes de cada corrida: `validar.mjs` en verde, 110 pruebas unitarias, regresiones sobre las trampas
+encontradas y comparación registro por registro contra la corrida anterior (la salida es
+reproducible: Railway y local dan exactamente los mismos 10.856 registros). Detalle del cambio de
+fuentes en `docs/incidente.md`; tokens y costo en `DECISIONS.md`.
 
 ## Video
 
-`{{LINK_VIDEO}}` (demo de 5 minutos: problema, demo en vivo de `/anonymize`, diagrama, números).
+https://youtu.be/mOaPlYEH5C0 (2 minutos: problema, demo, diagrama, números).
 
 ## Estructura
 

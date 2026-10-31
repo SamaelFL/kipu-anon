@@ -228,7 +228,7 @@ def _cue(G, eid, m):
 def _puntaje(cx: Contexto, eid, m, rid, pila_like):
     G = cx.G
     own = eid in cx.own.get(rid, set())
-    # una firma ("mi mamá, Ignacio") o "te atiende Brayan" nombran al autor; un saludo, al otro participante
+    # una firma ("mi mamá, Rogelio") o "te atiende Brayan" nombran al autor; un saludo, al otro participante
     self_cue = bool(CUE_SELF.search(m.izq or "")) or m.forma == "relacion"
     if pila_like and own and not self_cue:
         own = False
@@ -380,7 +380,7 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
     stats = defaultdict(int)
     PILA = {"pila", "apodo"}
 
-    # ---- fase 0: género del contexto ("mi novia Daniel Giraldo", "es clienta") frente a candidatos exactos
+    # ---- fase 0: género del contexto ("mi novia Ramiro Giraldo", "es clienta") frente a candidatos exactos
     for rid, ms in menciones.items():
         for m in ms:
             if not m.kept and m.tipo == "nombre" and len(m.cands) >= 1 and m.forma not in ("tolerante", "honorifico"):
@@ -417,9 +417,9 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
                 pendientes.append((rid, m))
             elif m.tipo in ("nombre", "slug") and not m.cands:
                 pendientes.append((rid, m))
-    # ---- fase A2: en una línea con radicado ("PQR-2026-0537 | Juliana Mejía | ..."), el nombre más cercano al
+    # ---- fase A2: en una línea con radicado ("PQR-2026-0537 | Diana Mejía | ..."), el nombre más cercano al
     # radicado es el dueño de ese radicado si su nombre coincide: así se desempatan los homónimos de las tablas.
-    # Solo el más cercano: en "la PQR-0451 de Daniela Ordóñez con el extracto de Daniela Ordóñez" la segunda es otra.
+    # Solo el más cercano: en "la PQR-0451 de Carolina Ordóñez con el extracto de Carolina Ordóñez" la segunda es otra.
     hits = []
     for rid, ms in menciones.items():
         rec = records.get(rid) or {}
@@ -446,7 +446,7 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
         tomadas.add(id(m))
         m.entity_id = d
         stats["radicado_linea"] += 1
-    # ---- fase A3: "Camila Arango, cédula terminada en 2961": los últimos dígitos deciden entre homónimos
+    # ---- fase A3: "Viviana Arango, cédula terminada en 1234": los últimos dígitos deciden entre homónimos
     for rid, ms in menciones.items():
         for m in ms:
             if m.kept or m.tipo != "nombre" or m.entity_id is not None and len(set(m.cands)) < 2:
@@ -489,7 +489,7 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
             if mejor >= 1 and len(gan) == 1:
                 m.entity_id = gan[0]
                 stats["aposicion"] += 1
-    # ---- fase A5: el oficio que describe la frase desempata ("Alejandra Rojas publicó la primera pieza de la
+    # ---- fase A5: el oficio que describe la frase desempata ("Mónica Rojas publicó la primera pieza de la
     # serie ... va a entrevistar" es la periodista, no la agente nueva que se llama igual)
     for rid, ms in menciones.items():
         for m in ms:

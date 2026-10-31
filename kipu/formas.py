@@ -179,7 +179,7 @@ _DE_PALABRA = {"punto": ".", "guion bajo": "_", "guion": "-", "mas": "+", "arrob
 
 
 def deletrear(correo: str) -> str:
-    """'martin.torres@icloud.com' -> 'martin punto torres arroba icloud punto com'."""
+    """'ana.perez@ejemplo.com' -> 'ana punto perez arroba ejemplo punto com'."""
     partes = re.split(r"([.@_+\-])", correo)
     return " ".join(_A_PALABRA.get(p, p) for p in partes if p)
 
