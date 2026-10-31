@@ -1,0 +1,6 @@
+{"theme":"base","themeVariables":{
+ "background":"#0b0b0f","fontFamily":"JetBrains Mono, Menlo, monospace","fontSize":"15px",
+ "primaryColor":"#1c1a33","primaryTextColor":"#f2f1fb","primaryBorderColor":"#a59ef0",
+ "lineColor":"#a59ef0","textColor":"#f2f1fb",
+ "clusterBkg":"#121120","clusterBorder":"#4b4685",
+ "edgeLabelBackground":"#0b0b0f","tertiaryColor":"#121120","secondaryColor":"#1c1a33"}}

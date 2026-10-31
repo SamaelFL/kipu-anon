@@ -30,3 +30,10 @@ flowchart TB
   O --> S["Servicio /v1 en Railway<br/>/health · /run · /output · /entities"]
   AN --> S
   CHK -.-> J["Juez local<br/>replica validar.mjs<br/>sample + tests + trampas del corpus"]
+
+  classDef store fill:#1c1a33,stroke:#6fcf97,color:#f2f1fb
+  classDef out fill:#a59ef0,stroke:#a59ef0,color:#0b0b0f
+  classDef juez fill:#0b0b0f,stroke:#6fcf97,color:#6fcf97,stroke-dasharray:4 3
+  class M store
+  class S,O,AN out
+  class J juez
