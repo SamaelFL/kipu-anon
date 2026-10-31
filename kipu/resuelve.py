@@ -22,7 +22,8 @@ CUE_EMP_FUERTE = re.compile(r"(?:\bagente|\banalista|\bcoordinador|\bgerente|\bj
                             r"\baprueba|\brevisado|\belaborado|\bpreparado|\breporta|\bceo\b|\bcto\b|\bdirector|"
                             r"\bcompan|\bde soporte|\bfirma|\bsoy de|\bcontador|\babogad|\bproduct|\bmarketing|"
                             r"\bautorizado|\bautoriza)")
-CUE_SELF = re.compile(r"(?:\bsoy\s*$|\bme llamo\s*$|\bhabla\s*$|\bmi nombre es\s*$|\bte escribe\s*$|\bhabla con\s*$)")
+CUE_SELF = re.compile(r"(?:\bsoy\s*$|\bme llamo\s*$|\bhabla\s*$|\bmi nombre es\s*$|\bte escribe\s*$|\bhabla con\s*$|"
+                      r"\b(?:te|le|les|os) atiende\s*$|\batiende\s*$|\b(?:saludos|atentamente|cordialmente|gracias)\s*[,.]?\s*$)")
 CUE_CONFIRMA = re.compile(r"(?:clienta|cliente|cuenta|credito|tarjeta|tambien tiene|titular|usuari)")
 
 
@@ -164,14 +165,17 @@ def _cue(G, eid, m):
 def _puntaje(cx: Contexto, eid, m, rid, pila_like):
     G = cx.G
     own = eid in cx.own.get(rid, set())
-    self_cue = bool(CUE_SELF.search(m.izq or ""))
+    # una firma ("mi mamá, Ignacio") o "te atiende Brayan" nombran al autor; un saludo, al otro participante
+    self_cue = bool(CUE_SELF.search(m.izq or "")) or m.forma == "relacion"
     if pila_like and own and not self_cue:
         own = False
     fr = cx.fuerte_rec[rid].get(eid, 0)
     ft = cx.fuerte_hilo[cx.hilo[rid]].get(eid, 0) - fr
     tx = cx.puntaje_tx(eid, rid)
-    part = eid in cx.participantes(rid)
-    return (int(own and (not pila_like or self_cue)), int(fr > 0), tx, _cue(G, eid, m), int(ft > 0), int(part))
+    en_hilo = eid in cx.participantes(rid)
+    propio = eid in cx.own.get(rid, set())
+    part = 0 if not en_hilo else (1 if propio else 2)     # el otro participante pesa más que el autor
+    return (int(own and (not pila_like or self_cue)), int(fr > 0), tx, _cue(G, eid, m), int(ft > 0), part)
 
 
 def _mejor(cx, cands, m, rid, pila_like, exigir_presencia=False):
@@ -215,6 +219,24 @@ def _scope(cx, rid):
     return cx.hilo[rid]
 
 
+def _participante_con_nombre(cx, rid, tk):
+    """Participante del hilo (autor de algún mensaje) cuyo nombre de pila o completo es `tk`."""
+    G = cx.G
+    hallados = []
+    for eid in cx.participantes(rid):
+        e = G[eid]
+        if e.kept:
+            continue
+        for nombre in e.atributos.get("personas") or [e.nombre]:
+            t = toks(nombre)
+            if t and (tk == t[:len(tk)] and len(tk) <= 2 or tk == t):
+                hallados.append(eid)
+                break
+    if len(set(hallados)) == 1:
+        return hallados[0]
+    return None
+
+
 def _crear(cx, m, rid, nuevo_llave_base, genero_pistas=None):
     """Crea (o reutiliza) la entidad de una mención sin evidencia."""
     G = cx.G
@@ -229,6 +251,10 @@ def _crear(cx, m, rid, nuevo_llave_base, genero_pistas=None):
         c = [eid for k, eid in cx.nuevas[h].items() if k.split(" ")[0] == tk[0]]
         if len(set(c)) == 1:
             return c[0]
+    # un nombre que coincide con el autor o con un participante del hilo es esa persona
+    part = _participante_con_nombre(cx, rid, tk)
+    if part:
+        return part
     rel = m.rel
     ancla = cx.autor.get(rid)
     if rel and ancla and not G[ancla].kept:
@@ -251,6 +277,37 @@ def _crear(cx, m, rid, nuevo_llave_base, genero_pistas=None):
     return e.entity_id
 
 
+_REL_F = {"mama", "madre", "hermana", "esposa", "novia", "hija", "jefa", "socia", "prima", "tia", "abuela",
+          "cunada", "sobrina", "amiga", "vecina", "suegra", "nuera", "companera", "empleada"}
+_REL_M = {"papa", "padre", "hermano", "esposo", "marido", "novio", "hijo", "jefe", "socio", "primo", "tio",
+          "abuelo", "cunado", "sobrino", "amigo", "vecino", "suegro", "yerno", "companero", "empleado"}
+
+
+def _ajustar_por_genero(G, m):
+    """Si el contexto fija el género (relación o "clienta") y todos los candidatos exactos son del otro género,
+    pero hay un único candidato a distancia 1 del género correcto, la mención es esa persona."""
+    tk = toks(m.texto)
+    if len(tk) < 2:
+        return
+    ventana = (m.izq or "")[-30:] + " " + (m.der or "")[:30]
+    rel = F.plano(m.rel or "")
+    quiere = None
+    if rel in _REL_F or re.search(r"\bclienta\b", ventana):
+        quiere = "f"
+    elif rel in _REL_M:
+        quiere = "m"
+    if not quiere:
+        return
+    gens = {G[c].genero for c in m.cands if c in G}
+    if not gens or gens != {"m" if quiere == "f" else "f"}:
+        return
+    alt = [c for c in detector(G)._tolerante(tk) if G[c].genero == quiere]
+    if len(set(alt)) == 1:
+        m.cands = [alt[0]]
+        m.forma = "tolerante"
+        m.entity_id = None
+
+
 def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
     """Asigna entity_id a las menciones y crea las entidades nuevas. Devuelve estadísticas."""
     if genero_fn is None:
@@ -260,6 +317,11 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
     stats = defaultdict(int)
     PILA = {"pila", "apodo"}
 
+    # ---- fase 0: género del contexto ("mi novia Daniel Giraldo", "es clienta") frente a candidatos exactos
+    for rid, ms in menciones.items():
+        for m in ms:
+            if not m.kept and m.tipo == "nombre" and len(m.cands) >= 1 and m.forma not in ("tolerante", "honorifico"):
+                _ajustar_por_genero(G, m)
     # ---- fase A: asignaciones fuertes
     pendientes = []
     for rid, ms in menciones.items():
@@ -303,13 +365,6 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
                 resto.append((rid, m))
                 continue
             pila_like = m.forma in PILA or (m.forma == "relacion" and len(toks(m.texto)) == 1)
-            if m.forma == "relacion" and len(toks(m.texto)) == 1:
-                # el pariente no es quien escribe: se descarta al autor entre los candidatos
-                propios = cx.own.get(rid, set())
-                m.cands = [c for c in m.cands if c not in propios]
-                if not m.cands:
-                    resto.append((rid, m))
-                    continue
             if m.forma == "tolerante":
                 ok = _mejor(cx, m.cands, m, rid, True, exigir_presencia=True)
                 if ok is None and len(m.cands) == 1:

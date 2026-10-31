@@ -113,3 +113,73 @@ class FilaDesconocida(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def chat_de(i, autor, texto, hilo="c:2"):
+    return {"id": i, "thread_id": hilo, "author": autor, "ts": "1", "text": texto, "attachments": []}
+
+
+def salida_de(mo, regs):
+    return {r["id"]: r for r in mo.anonimizar(regs)[0]}
+
+
+class NombreDelAutor(unittest.TestCase):
+    """El nombre tras "mi mamá," suele ser la firma del autor, no un tercero."""
+
+    def setUp(self):
+        self.mo = motor([
+            cliente("CL-1", "Ignacio Marulanda López", "10101010", "imarulanda@gmail.com", "3001110011"),
+            cliente("CL-2", "Paola Pérez Ospina", "20202020", "pperez@gmail.com", "3001110012"),
+            cliente("CL-3", "Brayan Gómez Vargas", "30303030", "bgomez@gmail.com", "3001110013"),
+            empleado("KP-1", "Brayan Zapata Gutiérrez", "40404040", "brayan.zapata@kipupay.co", "3001110014"),
+        ])
+
+    def test_firma_tras_mi_mama_es_el_autor_y_no_crea_rel(self):
+        for autor, pila in (("Ignacio Marulanda López", "Ignacio"), ("Paola Pérez Ospina", "Paola")):
+            r = chat_de("x-" + pila, autor, "Quiero una tarjeta adicional para mi mamá, %s" % pila)
+            o = salida_de(self.mo, [r])["x-" + pila]
+            seudo_pila = o["author"].split()[0]
+            self.assertNotIn(pila, o["text"])
+            self.assertTrue(o["text"].endswith(seudo_pila), (o["text"], o["author"]))
+        self.assertFalse([e for e in self.mo.G.values() if e.llave.startswith("rel:")])
+
+    def test_nombre_que_no_es_de_nadie_del_hilo_sigue_siendo_un_tercero(self):
+        r = chat_de("t1", "Ignacio Marulanda López", "Quiero una tarjeta adicional para mi mamá, Rosalinda")
+        o = salida_de(self.mo, [r])["t1"]
+        self.assertNotIn("Rosalinda", o["text"])
+        self.assertTrue([e for e in self.mo.G.values() if e.llave.startswith("rel:")])
+
+    def test_dos_participantes_con_la_misma_pila_cada_uno_su_seudonimo(self):
+        hilo = [chat_de("h1", "Brayan Gómez Vargas", "buenas tardes, pagué dos veces"),
+                chat_de("h2", "Brayan Zapata Gutiérrez", "Buenas tardes Brayan, te atiende Brayan. Veo los pagos."),
+                chat_de("h3", "Brayan Zapata Gutiérrez", "Con gusto, Brayan.")]
+        o = salida_de(self.mo, hilo)
+        cliente_p = o["h1"]["author"].split()[0]
+        agente_p = o["h2"]["author"].split()[0]
+        self.assertNotEqual(cliente_p, agente_p)
+        self.assertEqual(o["h2"]["text"], "Buenas tardes %s, te atiende %s. Veo los pagos." % (cliente_p, agente_p))
+        self.assertEqual(o["h3"]["text"], "Con gusto, %s." % cliente_p)
+
+
+class NoviaConNombreDeHombre(unittest.TestCase):
+    TEXTO = "Confirmo. ¿Puedo llevar a mi novia Daniel Pardo? Es clienta también jaja"
+
+    def pseudos(self, filas):
+        mo = motor(filas)
+        sm = texto_de(mo, "Habló Daniel Pardo.")[len("Habló "):-1]
+        sf = texto_de(mo, "Habló Daniela Pardo.")[len("Habló "):-1] if len(filas) > 1 else None
+        nov = salida_de(mo, [chat_de("n1", "Kipi", self.TEXTO, "g:1")])["n1"]["text"]
+        return sm, sf, nov
+
+    def test_es_clienta_liga_a_la_clienta_a_distancia_uno(self):
+        sm, sf, nov = self.pseudos([
+            cliente("CL-1", "Daniel Pardo Hoyos", "50505050", "dpardo@gmail.com", "3001110021"),
+            cliente("CL-2", "Daniela Pardo Rey", "60606060", "dpardor@gmail.com", "3001110022")])
+        self.assertIn(sf, nov)
+        self.assertNotIn(sm, nov)
+        self.assertNotIn("Daniel", nov.replace(sf, ""))
+
+    def test_sin_clienta_a_distancia_uno_queda_el_cliente_exacto(self):
+        sm, _, nov = self.pseudos([cliente("CL-1", "Daniel Pardo Hoyos", "50505050", "dpardo@gmail.com", "3001110021")])
+        self.assertIn(sm, nov)
+        self.assertNotIn("Pardo", nov)
