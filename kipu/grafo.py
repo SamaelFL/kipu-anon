@@ -531,14 +531,10 @@ def construir(records, users=None, genero_fn=None) -> Grafo:
             cl.ids["cliente_id"] = c["cliente_id"]
             cl.genero = ""
         if cl is not None:
-            cl.records.add(r["id"])
             G.id(cl.entity_id, "radicado", c.get("radicado", ""))
             if c.get("cedula") and not cl.ids.get("cedulas"):
                 G.id(cl.entity_id, "cedula", c["cedula"])
             cl.atributos.setdefault("ciudad", c.get("ciudad", ""))
-        ag = por_handle.get((c.get("agente") or "").lower())
-        if ag:
-            G[ag].records.add(r["id"])
 
     # ---- transacciones
     for r in tablas["transacciones"]:
@@ -551,7 +547,6 @@ def construir(records, users=None, genero_fn=None) -> Grafo:
         G.tx.setdefault(c.get("cliente_id", ""), []).append((c.get("fecha", ""), monto))
         if cl is None:
             continue
-        cl.records.add(r["id"])
         d = c.get("descripcion", "")
         for m in P.RX_CREDITO.finditer(d):
             G.id(cl.entity_id, "credito", m.group(0))

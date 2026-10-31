@@ -197,3 +197,41 @@ class PilaEnMinuscula(unittest.TestCase):
     def test_nombre_en_minuscula_con_saludo_si_se_reemplaza(self):
         o = texto_de(self.mo, "jajaja ok sorry. gracias isabel! nos vemos")
         self.assertNotIn("isabel", o)
+
+
+class RecordsDeEntities(unittest.TestCase):
+    """entities.records lista solo registros donde se reemplazó una forma de la persona."""
+
+    def test_las_transacciones_por_cliente_id_no_cuentan(self):
+        import csv
+        import json
+        d = Path(tempfile.mkdtemp())
+        (d / "tables").mkdir()
+        (d / "chats" / "soporte").mkdir(parents=True)
+        (d / "docs").mkdir()
+        fila = cliente("CL-9", "Marisol Quintana Duque", "44444444", "mquintana@gmail.com", "3001110004")["columns"]
+        with open(d / "tables" / "clientes.csv", "w", encoding="latin-1", newline="") as f:
+            w = csv.writer(f, delimiter=";")
+            w.writerow(fila.keys())
+            w.writerow(fila.values())
+        with open(d / "tables" / "transacciones.csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["tx_id", "fecha", "cliente_id", "tipo", "monto", "descripcion", "canal", "estado"])
+            w.writerow(["TX-1", "2026-09-01", "CL-9", "compra", "5000", "Compra Éxito Boston", "tarjeta", "aprobada"])
+            w.writerow(["TX-2", "2026-09-02", "CL-9", "pago_credito", "9000", "Pago de Marisol Quintana", "pse", "aprobada"])
+        (d / "docs" / "index.json").write_text("[]")
+        (d / "chats" / "channels.json").write_text("[]")
+        (d / "chats" / "users.json").write_text(json.dumps([{"id": "U1", "name": "mquintana", "real_name": "Marisol Quintana Duque",
+                                                              "profile": {"title": "Cliente", "email": "mquintana@gmail.com"}}]))
+        (d / "chats" / "soporte" / "2026-09-03.json").write_text(json.dumps([
+            {"user": "U1", "text": "Hola, necesito ayuda", "ts": "1790000000.000100", "client_msg_id": "m1"},
+            {"user": "U1", "text": "Soy Marisol", "ts": "1790000001.000100", "client_msg_id": "m2", "thread_ts": "1790000000.000100"}]))
+        from kipu.sources import LocalSource
+        out = d / "out"
+        pipeline.run(LocalSource(d), out, state_dir=d / "estado")
+        ents = json.loads((out / "entities.json").read_text())["entities"]
+        persona = [e for e in ents if not e.get("kept")][0]
+        self.assertIn("clientes:CL-9", persona["records"])
+        self.assertIn("m1", persona["records"])                       # es la autora
+        self.assertIn("transacciones:TX-2", persona["records"])       # su nombre aparece
+        self.assertNotIn("transacciones:TX-1", persona["records"])    # solo cliente_id

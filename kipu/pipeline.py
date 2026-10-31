@@ -234,7 +234,7 @@ def _entidades_json(G, rz, salida, menciones):
                              "reason": e.reason or "organización, lugar, marca o figura pública; no es persona natural",
                              "records": []})
             continue
-        recs = sorted(r for r in e.records if r in por_id)
+        recs = sorted(r for r in rz.recs.get(e.entity_id, ()) if r in por_id)
         if not recs:
             continue
         blob = "\n".join(_texto_plano(por_id[r]) for r in recs)
@@ -253,6 +253,15 @@ def _entidades_json(G, rz, salida, menciones):
             if contiene(blob, v):
                 ps[k] = v
         if not ps:
+            continue
+        # un record solo se declara si en él aparece algún seudónimo de la persona (nombre completo o una parte)
+        cands = []
+        for k, v in ps.items():
+            cands.append(v)
+            if k == "name":
+                cands.extend(t for t in v.split() if len(t) >= 3)
+        recs = [r for r in recs if any(contiene(_texto_plano(por_id[r]), c) for c in cands)]
+        if not recs:
             continue
         originals = sorted({f for f in rz.vistas.get(e.entity_id, ()) if isinstance(f, str) and f.strip()})
         if not originals:
