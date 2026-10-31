@@ -496,7 +496,9 @@ class Detector:
                     bad = False
                     for j in range(i, i + L - 1):
                         gap = n[tokens[j][1]:tokens[j + 1][0]]
-                        if not re.fullmatch(r"(?:[\s._\-+]|%20|%2e|%2d|%5f){1,3}", gap) or gap.count("\n") > 0:
+                        # un salto de línea suelto entre nombre y apellido (texto de PDF partido) sí une
+                        if not re.fullmatch(r"(?:[\s._\-+]|%20|%2e|%2d|%5f){1,3}", gap) or gap.count("\n") > 1 \
+                                or (gap.count("\n") == 1 and not re.fullmatch(r"[ \t]*\n[ \t]*", gap)):
                             bad = True
                             break
                     if bad:

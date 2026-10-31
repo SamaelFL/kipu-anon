@@ -32,7 +32,8 @@ RX_URL = re.compile(r"https?://[^\s<>\"')\]]+")
 RX_MONTO = re.compile(r"(?<![\d.,])\$?\s?(\d{1,3}(?:\.\d{3})+|\d{4,9})(?![\d])")
 RX_FECHA_TXT = re.compile(r"(\d{1,2}) de (" + "|".join(MESES) + r")(?: de (\d{4}))?")
 RX_FECHA_ISO = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
-CUE_CEDULA = re.compile(r"(?:\bc\.?\s?c\.?\b|cedula|documento|identificacion|\bcc\b|titular|\bdni\b|cedula de ciudadania)"
+CUE_CEDULA = re.compile(r"(?:\bc\.?\s?c\.?\b|cedula|documento|identificacion|\bcc\b|titular|\bdni\b|cedula de ciudadania"
+                        r"|identificad[oa] con|identified with|identification|(?<!tax )\bid\s*(?:no\b|number\b|nro\b|#))"
                         r"[^\d]{0,24}$")
 CUE_PASAPORTE = re.compile(r"(?:pasaporte|passport)[^a-z0-9]{0,24}$")
 CUE_PLACA = re.compile(r"(?:placa|plate|carro|vehiculo|moto|license)[^a-z0-9]{0,20}$")

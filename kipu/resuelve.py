@@ -588,7 +588,14 @@ def _propagar(cx, records, menciones):
                     L, seq = hit
                     from .texto import span_original
                     a, b = span_original(mp, toksn[i][0], toksn[i + L - 1][1], len(texto))
-                    if not any(x.campo == campo and x.ini < b and a < x.fin for x in ya):
+                    ov = [x for x in ya if x.campo == campo and x.ini < b and a < x.fin]
+                    if L > 1 and ov and all(x.tipo == "nombre" and a <= x.ini and x.fin <= b and (x.fin - x.ini) < (b - a)
+                                            for x in ov):
+                        # "Jesús" suelto dentro de "Jesús\nSánchez" (PDF partido): manda el nombre completo
+                        for x in ov:
+                            ya.remove(x)
+                        ov = []
+                    if not ov:
                         orig = texto[a:b]
                         if orig[:1].isupper() or L > 1:
                             mm = Mencion(rid, campo, a, b, orig, "nombre", formas[seq], "regla")
