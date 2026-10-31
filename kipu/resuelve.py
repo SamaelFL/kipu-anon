@@ -55,6 +55,60 @@ def _es_emp(G, eid):
     return e.llave.startswith("kp:") or bool(e.atributos.get("cargo"))
 
 
+RX_RADICADO_LINEA = re.compile(r"\bPQR-\d{4}-\d{3,5}\b")
+CANALES_INTERNOS = ("general", "escalamientos", "fraude-interno", "migracion-pagalo")
+RX_OBRA = re.compile(r"isaacs|novela|campana|edicion|homenaje|tributo")
+
+
+def _texto_campo(rec, campo):
+    x = rec
+    for p in (campo or "").split("."):
+        if isinstance(x, list):
+            try:
+                x = x[int(p)]
+            except (ValueError, IndexError):
+                return ""
+        elif isinstance(x, dict):
+            x = x.get(p, "")
+        else:
+            return ""
+    return x if isinstance(x, str) else ""
+
+
+def _linea(rec, m):
+    """La línea (entre saltos) donde está la mención."""
+    txt = _texto_campo(rec, m.campo)
+    if not txt or m.ini is None or m.fin is None or m.fin > len(txt):
+        return ""
+    a = txt.rfind("\n", 0, m.ini) + 1
+    b = txt.find("\n", m.fin)
+    return txt[a:len(txt) if b < 0 else b]
+
+
+def _nombre_cubre(e, tk):
+    """El nombre de la entidad empieza por los tokens de la mención (o los contiene con el mismo nombre de pila)."""
+    for nombre in (e.atributos.get("personas") or []) + [e.nombre]:
+        t = toks(nombre or "")
+        if t and (tuple(tk) == tuple(t[:len(tk)]) or (len(tk) >= 2 and tk[0] == t[0] and set(tk) <= set(t))):
+            return True
+    return False
+
+
+def _contexto_interno(rec):
+    th = rec.get("thread_id") or ""
+    if th:
+        return th.split(":")[0] in CANALES_INTERNOS
+    return "body" in rec
+
+
+def _es_obra(m):
+    """'María' de Jorge Isaacs (campaña, novela, edición): obra, no persona; se deja intacta."""
+    if F.plano(m.texto).strip() != "maria":
+        return False
+    ventana = F.plano((m.izq or "")[-90:] + " " + (m.der or "")[:90])
+    return bool(RX_OBRA.search(ventana))
+
+
 class Contexto:
     def __init__(self, G, records, menciones, genero_fn):
         self.G = G
@@ -354,6 +408,26 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
                 pendientes.append((rid, m))
             elif m.tipo in ("nombre", "slug") and not m.cands:
                 pendientes.append((rid, m))
+    # ---- fase A2: en una línea con radicado ("PQR-2026-0537 | Juliana Mejía | ..."), el nombre es el dueño
+    # de ese radicado si su nombre coincide: así se desempatan los homónimos de las tablas de los informes
+    for rid, ms in menciones.items():
+        rec = records.get(rid) or {}
+        for m in ms:
+            if m.kept or m.tipo != "nombre" or getattr(m, "estructurada", False):
+                continue
+            linea = _linea(rec, m)
+            rads = RX_RADICADO_LINEA.findall(linea) if linea else []
+            if not rads:
+                continue
+            tk = toks(m.texto)
+            duenos = set()
+            for rad in rads:
+                d = G.buscar("radicado", rad)
+                if d and d in G and not G[d].kept and _nombre_cubre(G[d], tk):
+                    duenos.add(d)
+            if len(duenos) == 1:
+                m.entity_id = next(iter(duenos))
+                stats["radicado_linea"] += 1
     # autores cuentan como presencia en su hilo
     # ---- fase B: ambiguas con candidatos (varias vueltas: lo resuelto aporta evidencia)
     for vuelta in range(2):
@@ -402,6 +476,27 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
             continue
         if not m.texto.strip():
             continue
+        if _es_obra(m):
+            stats["obra"] += 1
+            continue
+        if m.tipo == "nombre" and len(toks(m.texto)) == 1 and m.cands \
+                and _contexto_interno(records.get(rid) or {}) and not CUE_CL_FUERTE.search((m.izq or "")[-30:]):
+            # un nombre de pila suelto en un canal interno o un documento, sin evidencia de cliente: si de
+            # sus candidatos uno solo es empleado, es ese empleado ("Isabel pegó la cédula de un cliente")
+            emps = {c for c in m.cands if c in G and not G[c].kept and _es_emp(G, c)}
+            if len(emps) == 1:
+                m.entity_id = next(iter(emps))
+                stats["empleado_interno"] += 1
+                continue
+        if m.tipo == "slug" and len(set(m.cands)) > 1:
+            # el mismo slug ya resuelto con evidencia en otro registro decide entre homónimos
+            usados = {x.entity_id for ms2 in menciones.values() for x in ms2
+                      if x is not m and x.tipo == "slug" and x.entity_id and norm(x.texto) == norm(m.texto)}
+            usados &= set(m.cands)
+            if len(usados) == 1:
+                m.entity_id = next(iter(usados))
+                stats["slug_reusado"] += 1
+                continue
         m.entity_id = _crear(cx, m, rid, "men")
         stats["nuevas"] += 1
     # ---- fase D: propaga personas nuevas a otras menciones del hilo
