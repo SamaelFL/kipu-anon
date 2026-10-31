@@ -17,10 +17,10 @@ from .modelo import Entidad, Mencion
 from .texto import norm_mapa, span_original
 
 COMUN = {"luz", "sol", "paz", "mar", "rosa", "julio", "pilar", "gloria", "esperanza", "victoria", "cielo", "dolores",
-         "mercedes", "consuelo", "amparo", "mayo", "abril", "marzo", "alba", "perla", "flor", "nieves", "angel",
-         "santos", "sara", "jesus", "carmen", "cruz", "ines", "inés", "lucero", "estrella", "milagros", "soledad",
-         "fe", "caridad", "belen", "belén", "guadalupe", "rocio", "rocío", "socorro", "trinidad", "pastor", "leon",
-         "león", "clara", "bella", "linda", "dulce", "joya", "reina", "princesa", "marcial", "justo", "bueno"}
+         "mercedes", "consuelo", "amparo", "mayo", "abril", "marzo", "alba", "perla", "flor", "nieves", "lucero",
+         "estrella", "milagros", "soledad", "fe", "caridad", "belen", "guadalupe", "rocio", "socorro", "trinidad",
+         "pastor", "leon", "bella", "linda", "dulce", "joya", "reina", "princesa", "marcial", "justo", "bueno",
+         "cruz", "angel", "santos", "carmen"}
 MESES_TOK = set(P.MESES)
 STOP_START = {"hola", "gracias", "buenas", "buenos", "buen", "estimado", "estimada", "estimados", "senor", "senora",
               "senores", "sr", "sra", "srta", "dr", "dra", "don", "dona", "cliente", "clienta", "agente", "analista",
@@ -30,10 +30,14 @@ STOP_START = {"hola", "gracias", "buenas", "buenos", "buen", "estimado", "estima
               "kipu", "pay", "cc", "cl", "cra", "tv", "av", "dg", "sur", "norte", "este", "oeste", "bis", "titular",
               "caso", "tarjeta", "cuenta", "credito", "pse", "nota", "total", "valor", "monto", "fecha", "asunto",
               "atentamente", "cordialmente", "saludos", "att", "att.", "ref", "tel", "nit", "pregunta", "respuesta"}
-STOP_ALL = STOP_START | {"nos", "es", "son", "fue", "era", "esta", "este", "estos", "esos", "ese", "eso", "tengo",
+COMERCIO = {"compra", "retiro", "pago", "transferencia", "parqueadero", "peaje", "cajero", "corresponsal", "calle",
+            "carrera", "avenida", "abono", "cuota", "debito", "nomina", "acuerdo", "cuenta", "tarjeta", "credito",
+            "recibida", "recibido", "plaza", "parque", "centro", "comercial", "estacion", "terminal", "barrio"}
+STOP_ALL = STOP_START | COMERCIO | {"nos", "es", "son", "fue", "era", "esta", "este", "estos", "esos", "ese", "eso", "tengo",
                          "tiene", "tienes", "hay", "como", "pero", "mas", "muy", "todo", "toda", "todos", "cuando",
                          "donde", "porque", "cual", "cuales", "quien", "tambien", "aqui", "alli", "ahora", "luego",
                          "entonces", "gracias", "favor", "puedes", "puede", "pueden"}
+STOP_START = STOP_START | COMERCIO
 CUE_FUERTE = re.compile(r"(?:\bsoy|me llamo|mi nombre es|a nombre de|de parte de|habla con|hablas con|te escribe|"
                         r"le escribe|titular|se llama|llamad[oa]|atiende|atendido por|con el senor|con la senora)\s*:?\s*$")
 CUE_HOLA = re.compile(r"(?:\bhola|buenas|buenos dias|buenas tardes|buenas noches|gracias|hi|hey|dear|thanks|"
@@ -103,6 +107,8 @@ class Detector:
         from .grafo import catalogos
         cat = catalogos()
         self.given = (cat["given"] | self.pilas) - COMUN
+        from .grafo import VOCAB
+        self.surnames = (cat["surnames"] | VOCAB["surnames"]) - COMUN
         # gazetteer
         self.kept_idx = {}                # tokens -> (forma, razon)
         for o in P.KEPT_ORGS + list(G.gaz.get("comercios", [])):
@@ -203,6 +209,9 @@ class Detector:
     def en_texto(self, r, campo, t, ctx_autor=None):
         G = self.G
         n, mapa = norm_mapa(t)
+        if "%" in n:   # URL codificada: %20 -> espacios (misma longitud, los offsets no cambian)
+            for k_, v_ in (("%20", "   "), ("%2e", " . "), ("%2d", " - "), ("%5f", " _ ")):
+                n = n.replace(k_, v_)
         L = len(t)
         cs: list = []
 
@@ -333,13 +342,15 @@ class Detector:
         correo = correo.lower()
         local, _, dom = correo.partition("@")
         e = G.ident.get(("correo", correo))
+        if e is None and "+" in local:           # alias con etiqueta: usuario+tag@dominio
+            e = G.ident.get(("correo", local.split("+")[0] + "@" + dom))
         if e:
             add(a, b, tipo, [e], "grafo", prio, forma="correo", correo=correo)
             return
         if dom == "kipupay.co" and local.split(".")[0] in GENERICOS_EMAIL or local in GENERICOS_EMAIL:
             add(a, b, tipo, [], "gazetteer", prio, kept=True, forma="correo_generico", razon="buzón corporativo genérico")
             return
-        cands = self._por_forma([tuple(re.findall(r"[a-z0-9]+", local))])
+        cands = self._por_forma([tuple(re.findall(r"[a-z0-9]+", local.split("+")[0]))])
         # un correo desconocido cuya parte local coincide con una forma conocida
         add(a, b, tipo, cands, "grafo" if cands else "regla", prio, forma="correo", correo=correo, desconocido=not cands)
 
@@ -466,7 +477,7 @@ class Detector:
                     bad = False
                     for j in range(i, i + L - 1):
                         gap = n[tokens[j][1]:tokens[j + 1][0]]
-                        if not re.fullmatch(r"[\s._\-]{1,3}", gap) or gap.count("\n") > 0:
+                        if not re.fullmatch(r"(?:[\s._\-+]|%20|%2e|%2d|%5f){1,3}", gap) or gap.count("\n") > 0:
                             bad = True
                             break
                     if bad:
@@ -525,7 +536,9 @@ class Detector:
                 return False
         elif tok in COMUN:
             izq = n[max(0, ini - 24): ini]
-            if not (CUE_FUERTE.search(izq) or CUE_HOLA.search(izq)):
+            der = n[fin: fin + 3]
+            vocativo = bool(re.search(r"[,;:¡¿]\s*$", izq)) and bool(re.match(r"\s*[.!?,;:]", der))
+            if not (CUE_FUERTE.search(izq) or CUE_HOLA.search(izq) or vocativo):
                 return False
         return True
 
@@ -645,7 +658,11 @@ class Detector:
         while k < j and pl[k] not in self.given:
             k += 1
         if k >= j:
-            return
+            # sin pila conocida: dos o más palabras con algún apellido conocido (p. ej. "Isidora Quintana")
+            if j - i >= 2 and any(x in self.surnames for x in pl[i + 1:j]) and not any(x in self.place_tok for x in pl[i:j]):
+                k = i
+            else:
+                return
         run, pl = run[k:j], pl[k:j]
         # corta en lugares que no son parte del nombre (p.ej. "Daniel Cali")
         a, b = run[0][0], run[-1][1]

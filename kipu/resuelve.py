@@ -12,7 +12,7 @@ from collections import defaultdict
 from . import formas as F
 from . import patrones as P
 from .detecta import STOP_ALL, detector
-from .grafo import Grafo, hid, toks
+from .grafo import Grafo, hid, persona_de, toks
 from .modelo import Mencion
 from .texto import norm, norm_mapa
 
@@ -303,10 +303,17 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
                 resto.append((rid, m))
                 continue
             pila_like = m.forma in PILA or (m.forma == "relacion" and len(toks(m.texto)) == 1)
+            if m.forma == "relacion" and len(toks(m.texto)) == 1:
+                # el pariente no es quien escribe: se descarta al autor entre los candidatos
+                propios = cx.own.get(rid, set())
+                m.cands = [c for c in m.cands if c not in propios]
+                if not m.cands:
+                    resto.append((rid, m))
+                    continue
             if m.forma == "tolerante":
                 ok = _mejor(cx, m.cands, m, rid, True, exigir_presencia=True)
-                if ok is None and len(m.cands) == 1 and CUE_CONFIRMA.search((m.izq or "")[-30:] + " " + (m.der or "")[:30]):
-                    ok = m.cands[0]
+                if ok is None and len(m.cands) == 1:
+                    ok = m.cands[0]       # un nombre a distancia 1 de una sola persona conocida es esa persona
                 if ok is None and vuelta == 1:
                     m.cands = []
                     resto.append((rid, m))
@@ -326,13 +333,13 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
     # ---- fase C: entidades nuevas (primero nombres completos y relaciones; luego pilas sueltas)
     def clave_orden(x):
         rid, m = x
-        return (len(toks(m.texto)) == 1, rid)
+        return (m.tipo in ("correo", "correo_deletreado"), len(toks(m.texto)) == 1, rid)
 
     for rid, m in sorted(pendientes, key=clave_orden):
         if m.entity_id is not None:
             continue
         if m.tipo in ("correo", "correo_deletreado"):
-            m.entity_id = _entidad_correo(cx, m, rid)
+            m.entity_id = _entidad_correo(cx, m, rid, menciones)
             continue
         if m.tipo in ("cedula", "celular", "placa", "pasaporte", "credito", "direccion", "nacimiento"):
             continue    # ids desconocidos o ambiguos: fase E
@@ -362,10 +369,25 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
     return dict(stats)
 
 
-def _entidad_correo(cx, m, rid):
+def _entidad_correo(cx, m, rid, menciones=None):
     G = cx.G
     correo = getattr(m, "correo", None) or norm(m.texto)
     local = correo.split("@")[0]
+    # ¿es el correo de una persona de este registro o hilo? (inicial+apellido, nombre.apellido, ...)
+    base = re.sub(r"\d+$", "", local)
+    cand = {x.entity_id for x in (menciones or {}).get(rid, []) if x.entity_id and x.tipo in ("nombre", "apodo", "slug")}
+    cand |= set(cx.nuevas[cx.hilo[rid]].values()) | set(cx.participantes(rid)) | set(cx.own.get(rid, set()))
+    ok = []
+    for eid in cand:
+        e = G[eid]
+        if e.kept:
+            continue
+        for nombre in e.atributos.get("personas") or [e.nombre]:
+            if base in {F.plano(x) for x in F.locales_correo(persona_de(nombre))}:
+                ok.append(eid)
+                break
+    if len(set(ok)) == 1:
+        return ok[0]
     llave = "em:" + correo
     e = G.nueva(llave)
     if not e.nombre:

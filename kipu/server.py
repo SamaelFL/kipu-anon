@@ -36,6 +36,11 @@ class Jobs:
         self.dir = data_dir()
         (self.dir / "jobs").mkdir(parents=True, exist_ok=True)
         self.current = None
+        self.servicio = pipeline.Servicio(self.dir)
+        try:
+            self.servicio.cargar()
+        except Exception as e:  # noqa: BLE001
+            log("grafo previo ilegible: %s" % type(e).__name__)
         self._recover()
 
     def _path(self, jid):
@@ -93,7 +98,11 @@ class Jobs:
         log("job %s inicia" % jid)
         try:
             src = ApiSource(url, token)
-            res = pipeline.run(src, self.dir / "output")
+            res = pipeline.run(src, self.dir / "output", state_dir=self.dir)
+            try:
+                self.servicio.cargar()
+            except Exception as e:  # noqa: BLE001
+                log("no se pudo recargar el grafo: %s" % type(e).__name__)
             self._update(status="done", finished_at=now(), records=res["records"], cost=res["cost"])
             (self.dir / "latest").write_text(jid)
             log("job %s done %s" % (jid, res["records"]))
@@ -221,7 +230,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(422, {"error": "máximo %d registros" % MAX_RECORDS})
         if not all(validate_record(source, r) for r in recs):
             return self._send(422, {"error": "registro fuera del esquema de " + source})
-        self._send(200, {"records": recs, "entities": []})
+        try:
+            salida, ents = self.jobs.servicio.anonimizar(source, recs)
+        except RuntimeError as e:
+            return self._send(503, {"error": str(e)})
+        self._send(200, {"records": salida, "entities": ents})
 
     def _handle(self, method):
         try:

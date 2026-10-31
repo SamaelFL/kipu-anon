@@ -152,12 +152,21 @@ class Reemplazador:
                 orig = correo
             else:
                 orig = t
+            local, _, dom = orig.rpartition("@")
+            etiqueta = ""
+            if "+" in local:                      # alias usuario+etiqueta@dominio: la etiqueta se conserva
+                local, etiqueta = local.split("+", 1)
+                etiqueta = "+" + etiqueta
+            base = local + "@" + dom
             if eid:
                 sp = self.seudo(eid)
                 reales = self.reales(eid)
-                nuevo = ps.correo(orig, sp, reales[0] if reales else None)
+                nuevo = ps.correo(base, sp, reales[0] if reales else None)
             else:
-                nuevo = ps.correo(orig, persona_de("Persona Anónima"), None)
+                nuevo = ps.correo(base, persona_de("Persona Anónima"), None)
+            if etiqueta:
+                nl, _, nd = nuevo.rpartition("@")
+                nuevo = nl + etiqueta + "@" + nd
             if tipo != "correo_deletreado" and orig != orig.lower():
                 nuevo = nuevo.lower()
             self._uso(eid, "email", nuevo)

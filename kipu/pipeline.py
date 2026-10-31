@@ -60,11 +60,13 @@ def _publico(r):
 class Motor:
     """Grafo + seudónimos listos para anonimizar lotes (/run y /anonymize usan lo mismo)."""
 
-    def __init__(self, G, ps):
+    def __init__(self, G, ps, preparado=False):
         self.G = G
         self.ps = ps
+        self.recall_lote = 0       # segundos de corte para llm.recall en lotes (0 = sin LLM)
         self.rz = rz_mod.Reemplazador(G, ps, ps.genero)
-        ps.agregar_formas_reales(self._formas_reales())
+        if not preparado:
+            ps.agregar_formas_reales(self._formas_reales())
 
     def _formas_reales(self):
         for e in self.G.values():
@@ -85,6 +87,9 @@ class Motor:
         menciones = {r["id"]: D.detectar(r) for r in records}
         for rid, extra in (llm_menciones or {}).items():
             menciones.setdefault(rid, []).extend(extra)
+        if llm_menciones is None and self.recall_lote:
+            for m in _recall_con_corte(records, menciones, G, self.recall_lote):
+                menciones.setdefault(m.record_id, []).append(m)
         resuelve.resolver(rec_map, menciones, G, self.ps.genero)
         salida = []
         for r in records:
@@ -109,6 +114,34 @@ class Motor:
         return None
 
 
+def _recall_con_corte(records, menciones, G, corte):
+    """llm.recall sobre un lote, con corte duro: si no responde a tiempo se sigue con reglas."""
+    if llm is None or not os.environ.get("OPENROUTER_API_KEY") or os.environ.get("KIPU_SIN_LLM"):
+        return []
+    import concurrent.futures as cf
+
+    def trabajo():
+        unidades = llm.unidades_de([_publico(r) for r in records])
+        conocidas = [m for ms in menciones.values() for m in ms]
+        return llm.recall(unidades, conocidas)
+
+    ex = cf.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(trabajo)
+    try:
+        res = fut.result(timeout=corte)
+    except Exception as e:  # noqa: BLE001
+        log("recall del lote sin resultado (%s); sigue con reglas" % type(e).__name__)
+        ex.shutdown(wait=False, cancel_futures=True)
+        return []
+    ex.shutdown(wait=False)
+    out = []
+    for ml in res:
+        m = _desde_llm(ml, G)
+        if m is not None:
+            out.append(m)
+    return out
+
+
 def _desde_llm(ml, G):
     """MencionLLM validada -> Mencion del pipeline (persona nueva o forma conocida)."""
     if getattr(ml, "clase", "persona") not in ("persona", "tercero"):
@@ -126,22 +159,6 @@ def _desde_llm(ml, G):
     m.uid = None
     m.razon = ""
     return m
-
-
-def _recall(records_orig, menciones):
-    if llm is None or not os.environ.get("OPENROUTER_API_KEY"):
-        return {}
-    try:
-        unidades = llm.unidades_de(records_orig)
-        conocidas = [m for ms in menciones.values() for m in ms]
-        res = llm.recall(unidades, conocidas)
-    except Exception as e:  # noqa: BLE001
-        log("llm.recall falló (%s); sigue con reglas" % type(e).__name__)
-        return {}
-    por = {}
-    for ml in res:
-        m = _desde_llm(ml, None) if False else None
-    return {"_crudas": res}
 
 
 # ------------------------------------------------------------------ entities.json
@@ -303,3 +320,76 @@ def run(source, out_dir, state_dir=None):
         "cost": {"tokens_in": int(c.get("tokens_in", 0)), "tokens_out": int(c.get("tokens_out", 0)),
                  "seconds": round(seg, 2)},
     }
+
+
+# ------------------------------------------------------------------ /anonymize
+class Servicio:
+    """Estado cargado de la última corrida: grafo + store. Cada lote trabaja sobre una copia del grafo."""
+
+    def __init__(self, state_dir):
+        import threading
+        self.dir = Path(state_dir)
+        self.lock = threading.Lock()
+        self.G = None
+        self.ps = None
+
+    def cargar(self):
+        ruta = self.dir / "grafo.json"
+        if not ruta.exists():
+            return False
+        self.G = grafo_mod.Grafo.cargar(ruta)
+        self.ps = Pseudonimizador(secreto(), self.dir / "store.json")
+        self.ps.agregar_formas_reales(Motor(self.G, self.ps)._formas_reales())
+        return True
+
+    def listo(self):
+        return self.G is not None
+
+    def anonimizar(self, fuente: str, registros: list):
+        """-> (registros anonimizados, entidades que intervinieron)."""
+        with self.lock:
+            if self.G is None and not self.cargar():
+                # sin corrida previa: grafo vacío; las personas se detectan por reglas y quedan como nuevas
+                self.G = grafo_mod.Grafo()
+                self.ps = Pseudonimizador(secreto(), self.dir / "store.json")
+            G = copy.deepcopy(self.G)
+            motor = Motor(G, self.ps, preparado=True)
+            motor.recall_lote = 35
+            entrada = [copy.deepcopy(r) for r in registros]
+            salida, menciones = motor.anonimizar(entrada)
+            ents = _entidades_lote(G, motor.rz, entrada, salida, menciones)
+            self.ps.guardar()
+            return [_publico(r) for r in salida], ents
+
+
+def _entidades_lote(G, rz, entrada, salida, menciones):
+    por_ent = {}
+    for r in entrada:
+        for m in menciones.get(r["id"], []):
+            if m.entity_id and m.entity_id in G:
+                por_ent.setdefault(m.entity_id, {"records": set(), "originals": set()})
+                por_ent[m.entity_id]["records"].add(r["id"])
+                if not m.kept:
+                    por_ent[m.entity_id]["originals"].add(m.texto)
+        if "thread_id" in r:
+            eid = resuelve.autor_eid(r, G)
+            if eid:
+                por_ent.setdefault(eid, {"records": set(), "originals": set()})
+                por_ent[eid]["records"].add(r["id"])
+                por_ent[eid]["originals"].add(r.get("author", ""))
+    ents = []
+    for eid, d in por_ent.items():
+        e = G[eid]
+        if e.kept:
+            ents.append({"entity_id": eid, "type": "organization_or_place", "originals": [e.nombre],
+                         "pseudonyms": {}, "kept": True, "reason": e.reason, "records": sorted(d["records"])})
+            continue
+        uso = dict(rz.uso.get(eid, {}))
+        ps = {k: v for k, v in uso.items() if isinstance(v, str) and v and k not in ("handle_uid",)}
+        try:
+            ps.setdefault("name", rz.seudo(eid).completo)
+        except Exception:   # noqa: BLE001
+            pass
+        ents.append({"entity_id": eid, "type": "person", "originals": sorted(x for x in d["originals"] if x),
+                     "pseudonyms": ps, "records": sorted(d["records"])})
+    return ents
