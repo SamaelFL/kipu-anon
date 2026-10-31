@@ -1,0 +1,58 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Kipu Anon · Doc de diseño</title>
+<style>
+@page{size:A4;margin:9mm 10mm}
+body{font-family:Helvetica,Arial,sans-serif;font-size:7.9pt;line-height:1.24;color:#111;margin:0}
+h1{font-size:13pt;margin:0 0 2px}
+.sub{color:#555;margin:0 0 6px}
+h2{font-size:9pt;margin:5px 0 2px;border-bottom:1px solid #ccc;padding-bottom:1px}
+p{margin:2px 0}
+ul,ol{margin:2px 0 2px 15px;padding:0}
+li{margin:0 0 1px}
+table{border-collapse:collapse;width:100%;margin:3px 0}
+td,th{border:1px solid #ccc;padding:2px 4px;vertical-align:top;text-align:left}
+th{background:#f2f2f2}
+.cols{display:flex;gap:12px}.cols>div{flex:1}
+code{font-size:8pt}
+</style></head><body>
+<h1>Kipu Anon · Doc de diseño (Reto 1: Vende los datos sin vender a la gente)</h1>
+<p class="sub">Ismael Florean · Frontier CDMX/26 · Repo: github.com/SamaelFL/kipu-anon · Diagrama: docs/diagrama.png</p>
+
+<h2>1. Problema y meta</h2>
+<p>Entregar el corpus de soporte de Kipu Pay (2.028 mensajes, 26 docs, 6.243 filas) uno a uno, sin que se pueda reidentificar a nadie, útil para entrenar y con cada persona como una sola identidad de punta a punta, incluso cuando las fuentes crecen. El jurado puntúa fuga 45, utilidad 35 y consistencia 20. <b>Meta: ≥ 90.</b> Una base sólida por reglas da ~88, así que el diseño es <b>reglas deterministas primero</b> y el LLM solo cubre el último tramo de detección. El LLM nunca reescribe texto: reescribir pierde parecido y puede inventar datos de negocio.</p>
+
+<h2>2. Arquitectura (pipeline de 8 pasos, Python con librería estándar)</h2>
+<ol>
+<li><b>Ingesta:</b> cliente del API de fuentes con ETag y backoff (600 rpm). Decodifica <code>clientes.csv</code> en Latin-1. PDF: texto por <code>zlib</code> y operadores Tj, más el diccionario Info. HTML: meta y comentarios. MD: front matter. XML: atributos y comentarios. Todo se normaliza al esquema de <code>output/</code>.</li>
+<li><b>Registro de personas:</b> semillas con llave fuerte: <code>clientes</code> (CL-), <code>empleados</code> (KP-, reporta_a), <code>users.json</code> (uid, handle, correo) y <code>pqrs</code> (radicado, cédula, agente). Por persona guardamos todas las formas: nombre completo, nombre + primer apellido, nombre de pila en contexto, MAYÚSCULAS sin tildes, handle <code>nombre.apellido</code>, <code>nombre_apellido</code> de archivos, correo, cédula con y sin puntos, celular con y sin 57, dirección, nacimiento, placa y pasaporte.</li>
+<li><b>Detección en capas:</b> (a) diccionario de formas del registro con la misma normalización del juez (NFKC, confusables, sin tildes, minúsculas, separadores de dígitos); (b) patrones: correo, correo deletreado "arroba/punto", cédula, celular, placa <code>ABC123</code>, pasaporte, <code>&lt;@UID&gt;</code>, handles; (c) LLM barato con JSON estricto y caché, solo para nombres de terceros fuera del registro y para decidir persona vs. organización, lugar o figura pública. Hay lista de conservación: Bancolombia, Nequi, Superfinanciera, Carulla, ciudades, figuras públicas.</li>
+<li><b>Resolución de identidad</b>, por orden de evidencia: llave explícita (CL-, KP-, radicado, uid del autor) &gt; identificador fuerte en el mismo registro o hilo (cédula, correo, celular) &gt; participantes del hilo &gt; fila del maestro. <b>Los homónimos nunca se fusionan por nombre:</b> el desempate viene de un radicado, una fecha con monto, un adjunto o la fila del maestro. Una mención ambigua sin evidencia queda como persona aparte.</li>
+<li><b>Seudónimos deterministas:</b> <code>HMAC-SHA256(llave fija, llave de la persona)</code> elige del catálogo colombiano según el género del nombre. De ahí se derivan un correo del mismo dominio y formato (<code>nombre.apellido@kipupay.co</code>), una cédula de la misma longitud con formato válido y lejos del original, un celular 3xx válido, una dirección y una fecha plausibles. Las colisiones se resuelven con un contador. El mapa se persiste en un volumen, así que la misma persona conserva su seudónimo después del cambio de fuentes y en <code>/anonymize</code>.</li>
+<li><b>Reemplazo por spans</b>, de la forma más larga a la más corta, conservando el formato: puntos de la cédula, mayúsculas, nombre corto ↔ nombre corto y snake_case en nombres de archivo. También se reemplaza en metadata, adjuntos y comentarios. Nunca se borra una clave ni se vacía un registro.</li>
+<li><b>Cuasi-identificadores:</b> se calcula k-anonimato sobre (ciudad, barrio, ocupación, año) en el maestro. Donde k &lt; 5 se generaliza en <b>tablas y texto</b>: ocupación → sector, barrio → otro barrio de la misma ciudad o la ciudad, año → "hace unos años". La ciudad y la fecha de vinculación quedan intactas.</li>
+<li><b>Autochequeo antes de publicar:</b> barrido global de todas las formas reales del registro sobre toda la salida, con la normalización del juez. Si algo sobrevive, se hace una segunda pasada; además corre <code>validar.mjs</code>. <code>entities.json</code> declara todas las formas originales encontradas, los registros y los conservados con <code>kept</code> y <code>reason</code>.</li>
+</ol>
+
+<div class="cols"><div>
+<h2>3. Servicio y contrato</h2>
+<p>Raíz <code>/v1</code> con <code>ThreadingHTTPServer</code>; acepta Bearer opcional. <code>POST /run</code> encola el job en un hilo y <code>GET /run/{id}</code> da estado, conteos y costo. <code>/output/*</code> y <code>/entities</code> se leen del volumen. <code>/anonymize</code> usa en memoria el mismo registro y mapa: una persona vista recibe el mismo seudónimo y una nueva recibe uno nuevo y único. Corte de 45 s: si el LLM no responde, sigue solo con reglas. Corre en Railway: 1 réplica, sin reposo, volumen y healthcheck.</p>
+<h2>4. Decisiones y trade-offs</h2>
+<table><tr><th>Elegimos</th><th>Descartamos y por qué</th></tr>
+<tr><td>Reglas + registro y LLM solo como detector</td><td>LLM end-to-end: caro, no determinista, reescribe texto</td></tr>
+<tr><td>HMAC determinista + mapa persistido</td><td>Seudónimos al azar: rompen la consistencia entre corridas</td></tr>
+<tr><td>Generalizar cuasi-identificadores</td><td>Borrar: pierde utilidad y falla los tests de fuga</td></tr>
+<tr><td>Librería estándar</td><td>Presidio o NER listos: prohibidos; menos dependencias, menos fallas</td></tr>
+<tr><td>Identidad por evidencia</td><td>Por nombre: fusiona homónimos y separa al agente de la clienta</td></tr></table>
+</div><div>
+<h2>5. Seguridad, privacidad y fallas</h2>
+<ul>
+<li>El texto de las fuentes es dato: el LLM solo recibe fragmentos y devuelve spans, nunca instrucciones ni acciones.</li>
+<li>Llave HMAC y tokens solo en variables de entorno; sin hash sin sal; <code>/entities</code> solo para el jurado.</li>
+<li>Si el LLM falla o tarda, se sigue con reglas. Ante 429 de fuentes, backoff. Si el proceso se reinicia, el mapa sigue en el volumen. Un registro fuera de esquema devuelve 422. El servicio nunca se cae: handler global.</li>
+<li><b>Fuentes que crecen:</b> el canario de <code>record_index</code> con ETag detecta el cambio. Las personas viejas conservan su seudónimo y las nuevas reciben uno nuevo. La corrida 1 va antes del cambio porque vale 30 %.</li>
+</ul>
+<h2>6. Costo y evaluación</h2>
+<p>El corpus pesa ~435 mil tokens; el LLM solo ve los fragmentos sin resolver, estimado en menos de 150 mil tokens por corrida (centavos de dólar) y menos de 10 min por corrida. Se mide en local con <code>validar.mjs</code>, los 5 tests públicos, el diff contra <code>sample/expected_output</code> y un detector propio de fugas, todo por familia: directa, indirecta, oculta, falso positivo, homónimos y consistencia. El costo real se reporta en <code>/run</code> y <code>DECISIONS.md</code>.</p>
+<h2>7. Límites</h2>
+<p>Los nombres de pila sueltos sin contexto pueden quedar ambiguos; se priorizan sobre el riesgo de fusionar. Los PDF con fuentes embebidas raras quedarían fuera del parser stdlib; habría que agregar un extractor como respaldo.</p>
+</div></div>
+</body></html>

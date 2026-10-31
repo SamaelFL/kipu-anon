@@ -1,0 +1,8 @@
+.env
+fuentes/
+sample/
+sample.zip
+material/
+data/
+__pycache__/
+.DS_Store

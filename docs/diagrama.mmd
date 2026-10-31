@@ -1,0 +1,31 @@
+flowchart TB
+  subgraph F["API de fuentes · Bearer · 600 rpm · ETag"]
+    direction LR
+    C["chats Slack<br/>users · channels"]
+    D["26 docs<br/>PDF · HTML · MD"]
+    T["clientes.csv · transacciones.csv<br/>pqrs.xml · empleados.xml"]
+  end
+  subgraph A["POST /run · pipeline determinista (Python stdlib)"]
+    direction LR
+    I["1 Ingesta<br/>Latin-1, PDF por zlib,<br/>metadata, comentarios<br/>HTML/XML, front matter"]
+    R["2 Registro de personas<br/>clientes, empleados,<br/>users, pqrs<br/>todas las formas"]
+    DET["3 Detección en capas<br/>diccionario normalizado<br/>patrones: correo, arroba,<br/>cédula, celular, placa,<br/>pasaporte, UID, handles<br/>LLM solo para el resto"]
+    RES["4 Resolución<br/>llave CL / KP / radicado / uid<br/>> cédula, correo, celular<br/>> hilo > maestro<br/>homónimos nunca por nombre"]
+    I --> R --> DET --> RES
+  end
+  subgraph B["Seudonimizar y verificar"]
+    direction LR
+    P["5 Seudónimo determinista<br/>HMAC llave fija<br/>catálogo por género<br/>formatos válidos"]
+    REP["6 Reemplazo por spans<br/>conserva formato<br/>y snake_case<br/>nunca reescribe"]
+    Q["7 Cuasi-identificadores<br/>barrio, ocupación, año<br/>generalizados en<br/>tablas y texto"]
+    CHK["8 Autochequeo<br/>barrido global de<br/>formas reales<br/>+ validar.mjs"]
+    P --> REP --> Q --> CHK
+  end
+  F --> I
+  RES --> P
+  M[("pseudomap + registro<br/>volumen persistente")]
+  P <--> M
+  CHK --> O["output/<br/>chats · docs · tables<br/>+ entities.json honesto"]
+  M --> AN["POST /anonymize<br/>mismo registro y mapa<br/>50 registros en menos de 60 s"]
+  O --> S["Servicio /v1 en Railway<br/>/health · /run · /output · /entities"]
+  AN --> S
