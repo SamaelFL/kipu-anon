@@ -17,8 +17,8 @@ flowchart TB
     direction LR
     P["5 Seudónimo determinista<br/>HMAC llave fija<br/>catálogo por género<br/>formatos válidos"]
     REP["6 Reemplazo por spans<br/>conserva formato<br/>y snake_case<br/>nunca reescribe"]
-    Q["7 Cuasi-identificadores<br/>barrio, ocupación, año<br/>generalizados en<br/>tablas y texto"]
-    CHK["8 Autochequeo<br/>barrido global de<br/>formas reales<br/>+ validar.mjs"]
+    Q["7 Cuasi-identificadores<br/>ligados a la persona<br/>maestro: siempre<br/>texto: oficio, barrio, año de P"]
+    CHK["8 Autochequeo<br/>barrido global de formas<br/>ataque de enlace<br/>+ validar.mjs"]
     P --> REP --> Q --> CHK
   end
   F --> I
