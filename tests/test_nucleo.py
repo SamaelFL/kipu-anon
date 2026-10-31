@@ -183,3 +183,17 @@ class NoviaConNombreDeHombre(unittest.TestCase):
         sm, _, nov = self.pseudos([cliente("CL-1", "Daniel Pardo Hoyos", "50505050", "dpardo@gmail.com", "3001110021")])
         self.assertIn(sm, nov)
         self.assertNotIn("Pardo", nov)
+
+
+class PilaEnMinuscula(unittest.TestCase):
+    def setUp(self):
+        self.mo = motor([cliente("CL-1", "Clara Montoya Zapata", "70707070", "cmontoya@gmail.com", "3001110031"),
+                         cliente("CL-2", "Isabel Díaz Ospina", "80808080", "idiaz@gmail.com", "3001110032")])
+
+    def test_clara_como_adjetivo_no_se_toca(self):
+        self.assertEqual(texto_de(self.mo, "Listo, muy clara la explicación, gracias"),
+                         "Listo, muy clara la explicación, gracias")
+
+    def test_nombre_en_minuscula_con_saludo_si_se_reemplaza(self):
+        o = texto_de(self.mo, "jajaja ok sorry. gracias isabel! nos vemos")
+        self.assertNotIn("isabel", o)

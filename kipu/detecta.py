@@ -21,7 +21,7 @@ COMUN = {"luz", "sol", "paz", "mar", "rosa", "julio", "pilar", "gloria", "espera
          "mercedes", "consuelo", "amparo", "mayo", "abril", "marzo", "alba", "perla", "flor", "nieves", "lucero",
          "estrella", "milagros", "soledad", "fe", "caridad", "belen", "guadalupe", "rocio", "socorro", "trinidad",
          "pastor", "leon", "bella", "linda", "dulce", "joya", "reina", "princesa", "marcial", "justo", "bueno",
-         "cruz", "angel", "santos", "carmen"}
+         "cruz", "angel", "santos", "carmen", "clara"}
 MESES_TOK = set(P.MESES)
 STOP_START = {"hola", "gracias", "buenas", "buenos", "buen", "estimado", "estimada", "estimados", "senor", "senora",
               "senores", "sr", "sra", "srta", "dr", "dra", "don", "dona", "cliente", "clienta", "agente", "analista",
@@ -41,9 +41,9 @@ STOP_ALL = STOP_START | COMERCIO | {"nos", "es", "son", "fue", "era", "esta", "e
 STOP_START = STOP_START | COMERCIO
 CUE_FUERTE = re.compile(r"(?:\bsoy|me llamo|mi nombre es|a nombre de|de parte de|habla con|hablas con|te escribe|"
                         r"le escribe|titular|se llama|llamad[oa]|atiende|atendido por|con el senor|con la senora)\s*:?\s*$")
-CUE_HOLA = re.compile(r"(?:\bhola|buenas|buenos dias|buenas tardes|buenas noches|gracias|hi|hey|dear|thanks|"
+CUE_HOLA = re.compile(r"(?:\bhola|buenas|buenos dias|buenas tardes|buenas noches|\bgr?a?s?c?ias|gracias|hi|hey|dear|thanks|"
                       r"thank you|saludos|cordial saludo|estimad[oa]|bienvenid[oa]|perfecto|listo|claro|"
-                      r"entiendo|tranquil[oa]|ok|okey|oye|mira)[\s,]*$")
+                      r"entiendo|tranquil[oa]|ok|okey|oye|mira)[\s,!.¡:]*$")
 RX_CAP_TOK = re.compile(r"[A-ZÁÉÍÓÚÑÜ][A-Za-zÁÉÍÓÚÑÜáéíóúñü'’]+")
 RX_REL = re.compile(
     r"(?i:\b(?:mi|su|tu|mis|sus|nuestr[oa]|el|la|un|una)\s+"
@@ -553,10 +553,16 @@ class Detector:
                 return False
             if len(tok) < 4 or tok in COMUN:
                 return False
+            # en minúscula solo es nombre con un saludo, firma o vocativo ("gracias isabel!"), no en "muy clara la"
+            izq = n[max(0, ini - 24): ini]
+            der = n[fin: fin + 3]
+            vocativo = bool(re.search(r"(?:[,;:¡¿]|[!.?]\s|^)\s*$", izq)) and bool(re.match(r"\s*[.!?,;:]", der))
+            if not (CUE_FUERTE.search(izq) or CUE_HOLA.search(izq) or vocativo):
+                return False
         elif tok in COMUN:
             izq = n[max(0, ini - 24): ini]
             der = n[fin: fin + 3]
-            vocativo = bool(re.search(r"[,;:¡¿]\s*$", izq)) and bool(re.match(r"\s*[.!?,;:]", der))
+            vocativo = bool(re.search(r"(?:[,;:¡¿]|[!.?]\s|^)\s*$", izq)) and bool(re.match(r"\s*[.!?,;:]", der))
             if not (CUE_FUERTE.search(izq) or CUE_HOLA.search(izq) or vocativo):
                 return False
         return True
