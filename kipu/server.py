@@ -166,13 +166,21 @@ class Handler(BaseHTTPRequestHandler):
             path = path[3:] or "/"
         return path
 
-    def _auth_ok(self):
+    def _token_estado(self):
+        """(llegó cabecera Authorization, coincide con TEAM_TOKEN). Nunca el valor."""
         tok = os.environ.get("TEAM_TOKEN")
         h = self.headers.get("Authorization")
-        if not tok or not h:
-            return False
+        if not h:
+            return False, False
         m = re.fullmatch(r"Bearer\s+(.+)", h.strip(), re.I)
-        return bool(m) and hmac.compare_digest(m.group(1).encode(), tok.encode())
+        ok = bool(tok) and bool(m) and hmac.compare_digest(m.group(1).encode(), tok.encode())
+        return True, ok
+
+    def _auth_ok(self):
+        """KIPU_AUTH=off (default): nunca exige token. KIPU_AUTH=estricto: Bearer igual a TEAM_TOKEN."""
+        if os.environ.get("KIPU_AUTH", "off").strip().lower() != "estricto":
+            return True
+        return bool(os.environ.get("TEAM_TOKEN")) and self._token_estado()[1]
 
     def _body_json(self):
         try:
@@ -188,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method):
         path = self._route()
+        hay, coincide = self._token_estado()
+        log("auth %s %s: cabecera=%s coincide=%s" % (method, path, "sí" if hay else "no", "sí" if coincide else "no"))
         if path == "/health" and method == "GET":
             return self._send(200, {"status": "ok", "team": TEAM, "version": VERSION, "models": _modelos()})
         if not self._auth_ok():
@@ -275,9 +285,7 @@ class Server(ThreadingHTTPServer):
 
 
 def serve(port):
-    if not os.environ.get("TEAM_TOKEN"):
-        log("TEAM_TOKEN no está definido: el servicio no arranca")
-        raise SystemExit(2)
+    log("KIPU_AUTH=%s" % os.environ.get("KIPU_AUTH", "off"))
     Handler.jobs = Jobs()
     srv = Server(("0.0.0.0", port), Handler)
     log("escuchando en :%d, DATA_DIR=%s" % (port, data_dir()))
