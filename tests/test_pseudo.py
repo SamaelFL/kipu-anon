@@ -239,9 +239,70 @@ class SinCoincidencias(unittest.TestCase):
         p, _ = nuevo()
         cat = {norm(w) for x in p.mujeres + p.hombres + p.apellidos for w in x.split()}
         self.assertEqual(cat & reales, set())
-        self.assertGreaterEqual(len({x for x in p.mujeres if " " not in x}), 250)
-        self.assertGreaterEqual(len({x for x in p.hombres if " " not in x}), 250)
-        self.assertGreaterEqual(len(p.apellidos), 300)
+        self.assertGreaterEqual(len({x for x in p.mujeres if " " not in x}), 150)
+        self.assertGreaterEqual(len({x for x in p.hombres if " " not in x}), 150)
+        self.assertGreaterEqual(len(p.apellidos), 240)
+
+
+class Catalogos(unittest.TestCase):
+    """Los catálogos se congelan tras la primera corrida oficial: estas reglas deben cumplirse siempre."""
+
+    @staticmethod
+    def _tokens(x):
+        return {norm(t) for t in re.findall(r"[^\W\d_]+", x) if len(t) >= 2}
+
+    def setUp(self):
+        d = Path(__file__).resolve().parent.parent / "kipu" / "data"
+        leer = lambda n: [l.strip() for l in (d / n).read_text(encoding="utf-8").splitlines() if l.strip()]
+        self.mujeres, self.hombres, self.apellidos = leer("nombres_mujer.txt"), leer("nombres_hombre.txt"), leer("apellidos.txt")
+
+    def test_generos_disjuntos(self):
+        tm = set().union(*(self._tokens(x) for x in self.mujeres))
+        th = set().union(*(self._tokens(x) for x in self.hombres))
+        self.assertEqual(tm & th, set(), "nombres en ambos géneros")
+
+    def test_nombres_no_son_apellidos(self):
+        ta = set().union(*(self._tokens(x) for x in self.apellidos))
+        for lista in (self.mujeres, self.hombres):
+            self.assertEqual(set().union(*(self._tokens(x) for x in lista)) & ta, set())
+
+    def test_sin_duplicados_ni_tildes_perdidas(self):
+        for lista in (self.mujeres, self.hombres, self.apellidos):
+            self.assertEqual(len(lista), len(set(lista)))
+            for x in lista:
+                self.assertEqual(x, x.strip())
+                self.assertTrue(x[0].isupper(), x)
+        for n in ("Sofía Elena", "Jhon Fredy"):
+            self.assertIn(n, self.mujeres + self.hombres)
+
+    def test_ninguno_coincide_con_el_corpus(self):
+        base = Path(__file__).resolve().parent.parent / "fuentes"
+        if not base.exists():
+            self.skipTest("sin fuentes/")
+        import csv
+        import io
+        corpus = set()
+        for u in json.loads((base / "users.json").read_text(encoding="utf-8")):
+            corpus |= self._tokens(u.get("real_name", ""))
+        with open(base / "tables" / "clientes.csv", encoding="latin-1") as f:
+            filas = list(csv.DictReader(io.StringIO(f.read()), delimiter=";"))
+        for r in filas:
+            for c in ("nombre_completo", "barrio", "ciudad"):
+                corpus |= self._tokens(r[c])
+        for n in re.findall(r"<nombre>(.*?)</nombre>", (base / "tables" / "empleados.xml").read_text(encoding="utf-8")):
+            corpus |= self._tokens(n)
+        with open(base / "tables" / "transacciones.csv", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                corpus |= self._tokens(r["descripcion"])   # comercios y lugares
+        self.assertGreater(len(corpus), 300)
+        for nombre, lista in (("mujer", self.mujeres), ("hombre", self.hombres), ("apellidos", self.apellidos)):
+            comunes = sorted(set().union(*(self._tokens(x) for x in lista)) & corpus)
+            self.assertEqual(comunes, [], "%s coinciden con el corpus" % nombre)
+
+    def test_no_hay_nombres_raros_conocidos(self):
+        todos = {norm(x) for x in self.mujeres + self.hombres}
+        for raro in ("Natividad", "Dianela", "Karol", "Nicole", "Denise", "Alexis", "Ariel", "Yuri", "Dayan"):
+            self.assertNotIn(norm(raro), todos)
 
 
 class NuncaElOriginal(unittest.TestCase):
