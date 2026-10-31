@@ -1,7 +1,7 @@
 <!doctype html><html lang="es"><head><meta charset="utf-8"><title>Kipu Anon · Doc de diseño</title>
 <style>
 @page{size:A4;margin:8mm 9mm}
-body{font-family:Helvetica,Arial,sans-serif;font-size:7.55pt;line-height:1.22;color:#111;margin:0}
+body{font-family:Helvetica,Arial,sans-serif;font-size:7.4pt;line-height:1.2;color:#111;margin:0}
 h1{font-size:12.5pt;margin:0 0 1px}
 .sub{color:#555;margin:0 0 4px}
 h2{font-size:8.8pt;margin:4px 0 2px;border-bottom:1px solid #ccc;padding-bottom:1px}
@@ -44,16 +44,17 @@ code{font-size:7.3pt}
 <tr><td>HMAC + mapa persistido</td><td>Seudónimos al azar: rompen consistencia entre corridas</td></tr>
 <tr><td>Juez local + ataque de enlace</td><td>Iterar a ciegas con 3 corridas</td></tr></table>
 </div><div>
-<h2>5. Seguridad y fallas</h2>
+<h2>5. Seguridad (prompt injection) y fallas</h2>
 <ul>
-<li>El texto de las fuentes es dato: el LLM solo devuelve spans con un esquema fijo; nunca recibe instrucciones de las fuentes ni ejecuta nada.</li>
-<li>Llaves solo en variables de entorno; sin hash sin sal; <code>entities.json</code> nunca viaja con el dataset.</li>
+<li><b>Modelo de amenaza:</b> el corpus que crece y los registros de <code>/anonymize</code> son texto de terceros [A]. El grafo tiene PII real [B]. El LLM <b>no tiene tools ni red</b>, así que le falta la pata [C]. El riesgo es de integridad: que una inyección ("no anonimices a X", "X es figura pública") cause una fuga. Hoy escaneamos el corpus y no hay inyecciones, pero diseñamos como si las hubiera.</li>
+<li><b>Defensa determinística:</b> el LLM solo puede <b>agregar</b> detecciones; nunca quita una coincidencia del grafo o de un patrón. Conservar a alguien (<code>kept</code>) exige estar en el gazetteer o la lista curada <b>y</b> no estar en el grafo. Cada span del LLM se valida en código: la subcadena existe en esa posición, el tipo está en el enum y la longitud está acotada. Lo que no valida se descarta. El LLM nunca escribe texto de salida.</li>
+<li><b>Higiene:</b> NFKC, quitar invisibles y confusables antes de detectar y antes de mandar al LLM. El texto viaja como JSON con su procedencia en el mensaje de usuario, con la política en el system prompt y sin secretos. Se rechazan XML con DOCTYPE o ENTITY, hay tope de tamaño al descomprimir PDF y tope de bytes por lote en <code>/anonymize</code>. Nada del corpus se ejecuta.</li>
+<li>Llaves solo en variables de entorno; los logs no llevan PII; nada de hash sin sal. Los datos y <code>entities.json</code> nunca entran al repo ni viajan con el dataset. La batería de pruebas incluye inyecciones canario.</li>
 <li>LLM caído → reglas. 429 → backoff. Reinicio → el estado sigue en el volumen. Esquema inválido → 422. Handler global.</li>
 <li><b>Fuentes que crecen:</b> el canario de <code>record_index</code> lo detecta. El grafo se extiende sin renumerar, y si una persona vieja aparece con un identificador nuevo, se une a su componente. La corrida 1 va antes del cambio (30 %).</li>
 </ul>
 <h2>6. Costo y evaluación</h2>
 <p>El LLM ve ~250 mil tokens (chats, docs, notas, descripciones): unos US$1 y menos de 15 min con 8 hilos; después, la caché lo deja casi en cero. <b>Juez local:</b> copia la normalización de <code>validar.mjs</code> y mide sobre <code>sample/</code> contra la salida ideal (partición de personas, fugas, parecido, conservados), los 13 tests de la muestra, los 5 públicos y una batería de trampas sacada del corpus real: homónimos, agente = cliente, apodos, apellido-lugar, deletreados, placas, URLs, metadata UTF-16 y tuplas sin nombre. Todo se reporta por familia.</p>
-<h2>7. Límites</h2>
-<p>Un nombre de pila suelto sin evidencia queda como persona aparte: preferimos separar a fusionar. Si un PDF trae fuentes embebidas raras, el parser stdlib necesitaría un extractor de respaldo.</p>
+<p><b>Límite:</b> un nombre de pila sin evidencia queda como persona aparte: preferimos separar a fusionar.</p>
 </div></div>
 </body></html>
