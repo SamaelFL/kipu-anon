@@ -2,6 +2,7 @@
 Uso: python3 evals/test_texto.py"""
 import os
 import sys
+import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import texto
@@ -69,6 +70,11 @@ def main():
                 print(f"DIFIERE {k}: h={h!r} n={n!r} py={mio[k]!r} node={e[k]!r}")
     print(f"{len(CASOS)} casos x 5 funciones, {fallos} diferencias")
     return 1 if fallos else 0
+
+
+class TestTextoContraNode(unittest.TestCase):
+    def test_igual_que_validar_mjs(self):
+        self.assertEqual(main(), 0)
 
 
 if __name__ == "__main__":
