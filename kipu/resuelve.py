@@ -456,6 +456,32 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
             if len(c_ok) == 1:
                 m.entity_id = c_ok[0]
                 stats["ultimos_digitos"] += 1
+    # ---- fase A4: "Fernanda (agente de Cali)": el cargo o la ciudad en aposición al nombre deciden entre
+    # personas con el mismo nombre (la autora del mensaje es otra Fernanda, líder en Medellín)
+    for rid, ms in menciones.items():
+        for m in ms:
+            if m.kept or m.tipo != "nombre" or m.entity_id is not None:
+                continue
+            cs = [c for c in dict.fromkeys(m.cands) if c in G and not G[c].kept]
+            if len(cs) < 2 or not re.match(r"\s*[(,\u2013\u2014-]", m.der or ""):
+                continue
+            ven = F.plano((m.der or "")[:45])
+            pts = {}
+            for c in cs:
+                a = G[c].atributos
+                p_ = 0
+                ciudad = F.plano(a.get("ciudad") or "").strip()
+                if ciudad and re.search(r"\b" + re.escape(ciudad) + r"\b", ven):
+                    p_ += 1
+                cargo = F.plano(a.get("cargo") or "").split()
+                if cargo and re.search(r"\b" + re.escape(cargo[0]) + r"[a]?\b", ven):
+                    p_ += 1
+                pts[c] = p_
+            mejor = max(pts.values())
+            gan = [c for c, p_ in pts.items() if p_ == mejor]
+            if mejor >= 1 and len(gan) == 1:
+                m.entity_id = gan[0]
+                stats["aposicion"] += 1
     # autores cuentan como presencia en su hilo
     # ---- fase B: ambiguas con candidatos (varias vueltas: lo resuelto aporta evidencia)
     for vuelta in range(2):
