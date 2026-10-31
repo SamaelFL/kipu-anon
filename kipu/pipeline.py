@@ -54,6 +54,16 @@ def _jsonl(path, rows):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+def _entidades_cuasi(G):
+    """Entidades para cuasi: las filas de transacciones no cuentan como texto de la persona."""
+    out = []
+    for e in G.values():
+        c = copy.copy(e)
+        c.records = {r for r in e.records if not str(r).startswith("transacciones:")}
+        out.append(c)
+    return out
+
+
 def _publico(r):
     return {k: v for k, v in r.items() if not k.startswith("_")}
 
@@ -103,6 +113,11 @@ class Motor:
                     eid = self._entidad_autor(r, menciones.get(rid, []))
                 nuevo["author"] = self.rz.autor(r, eid)
             salida.append(nuevo)
+        if cuasi is not None:
+            try:
+                cuasi.aplicar(salida, _entidades_cuasi(G), self.ps)
+            except Exception as e:  # noqa: BLE001
+                log("cuasi.aplicar falló en el lote: %s" % type(e).__name__)
         return salida, menciones
 
     def _entidad_autor(self, r, ms):
@@ -313,11 +328,7 @@ def run(source, out_dir, state_dir=None):
         salida.append(nuevo)
     # para cuasi, las filas de transacciones no cuentan como texto de la persona (el lugar de un
     # comercio no es su barrio)
-    entidades_obj = []
-    for e in G.values():
-        c = copy.copy(e)
-        c.records = {r for r in e.records if not str(r).startswith("transacciones:")}
-        entidades_obj.append(c)
+    entidades_obj = _entidades_cuasi(G)
 
     if cuasi is not None:
         try:

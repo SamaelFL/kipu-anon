@@ -12,7 +12,8 @@ import re
 
 from . import formas as F
 from . import patrones as P
-from .grafo import Grafo, alnum, celular10, digitos, hid, toks
+from .grafo import (Grafo, alnum, celular10, digitos, genero_defecto, hid, sembrar_cliente,
+                    sembrar_empleado, toks)
 from .modelo import Entidad, Mencion
 from .texto import norm_mapa, span_original
 
@@ -177,8 +178,13 @@ class Detector:
         dueno = None
         if tabla == "clientes":
             dueno = G.llaves.get("cl:" + r["columns"].get("cliente_id", ""))
+            if dueno is None and r["columns"].get("cliente_id"):
+                # fila de un cliente desconocido: persona nueva (o la que ya tiene su cédula/correo/celular)
+                dueno = sembrar_cliente(G, r, genero_defecto(), enlazar=True).entity_id
         elif tabla == "empleados":
             dueno = G.llaves.get("kp:" + r["columns"].get("id", ""))
+            if dueno is None and r["columns"].get("id"):
+                dueno = sembrar_empleado(G, r, genero_defecto(), enlazar=True).entity_id
         for col, tipo in COLUMNAS.get(tabla, {}).items():
             v = r["columns"].get(col)
             if not v or not v.strip():
@@ -638,8 +644,31 @@ class Detector:
                     break
         return prot
 
+    def _tolerante_corrida(self, add, t, run, pl0):
+        """Coincidencia a distancia 1 sobre la corrida completa de palabras, antes de partirla.
+
+        La exacta siempre gana: si la subcorrida es una forma conocida no se toca. Varios candidatos
+        a distancia 1 se pasan al resolvedor, que usa evidencia o la trata como persona nueva."""
+        N = len(run)
+        usados = []
+        for L in range(min(N, 4), 1, -1):
+            for i in range(N - L + 1):
+                if any(i < y and x < i + L for x, y in usados):
+                    continue
+                sub = run[i:i + L]
+                tk = toks(t[sub[0][0]:sub[-1][1]])
+                if len(tk) != L or tk in self.G.formas_idx or tk in self.kept_idx or tk in self.lugares:
+                    continue
+                if any(x in STOP_ALL for x in pl0[i:i + L]):
+                    continue
+                cands = self._tolerante(tk)
+                if cands:
+                    add(sub[0][0], sub[-1][1], "nombre", cands, "tolerante", 53, forma="tolerante", tolerante=True)
+                    usados.append((i, i + L))
+
     def _run(self, add, t, n, mapa, run):
         pl0 = [F.plano(x[2]) for x in run]
+        self._tolerante_corrida(add, t, run, pl0)
         prot = self._protegidos(pl0)
         if prot:
             seg = []

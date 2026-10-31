@@ -285,6 +285,141 @@ def _origen(r: dict):
     return "docs", None
 
 
+def _ids_fuertes(G, c: dict, tipo: str) -> set:
+    """Entidades que ya reclaman la cédula, el correo o el celular de una fila."""
+    cols = ({"cedula": c.get("num_doc", ""), "correo": c.get("correo", ""), "celular": c.get("celular", "")}
+            if tipo == "clientes" else
+            {"cedula": c.get("documento", ""), "correo": c.get("correo", ""), "celular": c.get("celular", "")})
+    out = set()
+    for t, v in cols.items():
+        if v:
+            e = G.buscar(t, v)
+            if e:
+                out.add(e)
+    return out
+
+
+def sembrar_cliente(G: Grafo, r: dict, genero_fn, enlazar: bool = False) -> Entidad:
+    """Entidad de una fila de clientes (llave estable cl:<cliente_id>).
+
+    Con enlazar=True (fila desconocida en /anonymize): si su cédula, correo o celular ya son de una sola
+    entidad del grafo, la fila es esa persona; si no, es una persona nueva."""
+    c = r["columns"]
+    cid = c["cliente_id"]
+    nombre = c.get("nombre_completo", "")
+    if enlazar:
+        previa = G.por_llave("cl:" + cid)
+        if previa is not None:
+            return previa
+        fuertes = _ids_fuertes(G, c, "clientes")
+        if len(fuertes) == 1:
+            e = G[next(iter(fuertes))]
+            G.llaves["cl:" + cid] = e.entity_id
+            e.records.add(r["id"])
+            return e
+    e = G.nueva("cl:" + cid)
+    e.nombre = nombre
+    e.genero = genero_fn(nombre.split()[0] if nombre else "", [c.get("ocupacion", ""), c.get("notas", "")])
+    e.ids["cliente_id"] = cid
+    e.records.add(r["id"])
+    G.id(e.entity_id, "cedula", c.get("num_doc", ""))
+    G.id(e.entity_id, "correo", c.get("correo", ""))
+    G.id(e.entity_id, "celular", c.get("celular", ""))
+    if c.get("direccion"):
+        G.id(e.entity_id, "direccion", c["direccion"])
+    if c.get("fecha_nacimiento"):
+        G.id(e.entity_id, "nacimiento", c["fecha_nacimiento"])
+    e.atributos.update({"ciudad": c.get("ciudad", ""), "barrio": c.get("barrio", ""),
+                        "ocupacion": c.get("ocupacion", ""), "direccion": c.get("direccion", ""),
+                        "nacimiento": c.get("fecha_nacimiento", ""),
+                        "anio_vinculacion": (c.get("fecha_vinculacion") or "")[:4]})
+    G.formas_nombre(e.entity_id, nombre)
+    if c.get("correo"):
+        G.forma(e.entity_id, c["correo"].split("@")[0], "local", declarar=False)
+    notas = c.get("notas", "")
+    for m in _RX_PLACA_NOTA.finditer(notas):
+        if m.group(1).lower() not in P.PLACA_NO:
+            G.id(e.entity_id, "placa", m.group(0))
+    for m in _RX_PASAP_NOTA.finditer(notas):
+        G.id(e.entity_id, "pasaporte", m.group(1))
+    for m in P.RX_CREDITO.finditer(notas):
+        G.id(e.entity_id, "credito", m.group(0))
+    for m in re.finditer(r"(?i)\b(?:cl|calle|cra|carrera|tv|dg|av)\.?\s*\d+[A-Za-z]?[^.;]{0,30}#\s*\d+[A-Za-z]?\s*-\s*\d+(?:\s+\w+\s*\d+)?", notas):
+        G.id(e.entity_id, "direccion", m.group(0))
+    if c.get("ciudad"):
+        G.gaz["ciudades"].append(c["ciudad"])
+    if c.get("barrio"):
+        G.gaz["barrios"].setdefault(c.get("ciudad", ""), [])
+        if c["barrio"] not in G.gaz["barrios"][c.get("ciudad", "")]:
+            G.gaz["barrios"][c.get("ciudad", "")].append(c["barrio"])
+    return e
+
+
+def sembrar_empleado(G: Grafo, r: dict, genero_fn, enlazar: bool = False) -> Entidad:
+    """Entidad de una fila de empleados (llave estable kp:<id>); mismas reglas que sembrar_cliente."""
+    c = r["columns"]
+    kid = c["id"]
+    if enlazar:
+        previa = G.por_llave("kp:" + kid)
+        if previa is not None:
+            return previa
+        fuertes = _ids_fuertes(G, c, "empleados")
+        if len(fuertes) == 1:
+            e = G[next(iter(fuertes))]
+            G.llaves["kp:" + kid] = e.entity_id
+            e.records.add(r["id"])
+            return e
+    e = G.nueva("kp:" + kid)
+    e.nombre = c.get("nombre", "")
+    e.genero = genero_fn(e.nombre.split()[0] if e.nombre else "", [c.get("cargo", "")])
+    e.ids["empleado_id"] = kid
+    e.records.add(r["id"])
+    G.id(e.entity_id, "correo", c.get("correo", ""))
+    G.id(e.entity_id, "celular", c.get("celular", ""))
+    G.id(e.entity_id, "cedula", c.get("documento", ""))
+    if c.get("fecha_nacimiento"):
+        G.id(e.entity_id, "nacimiento", c["fecha_nacimiento"])
+    e.atributos.update({"cargo": c.get("cargo", ""), "reporta_a": c.get("reporta_a", ""),
+                        "ciudad": c.get("ciudad", ""), "anio_ingreso": c.get("ingreso", ""),
+                        "nacimiento": c.get("fecha_nacimiento", "")})
+    G.formas_nombre(e.entity_id, e.nombre)
+    if c.get("correo"):
+        G.forma(e.entity_id, c["correo"].split("@")[0], "local", declarar=False)
+    if c.get("ciudad"):
+        G.gaz["ciudades"].append(c["ciudad"])
+    if enlazar:
+        resolver_jefe(G, e.entity_id)
+    return e
+
+
+def resolver_jefe(G: Grafo, eid: str):
+    """Liga reporta_a (nombre completo o pila + apellido) con el único empleado que lo lleva."""
+    e = G[eid]
+    ra = e.atributos.get("reporta_a")
+    if not ra:
+        return
+    tk = toks(ra)
+    cand = []
+    for x in G.values():
+        if not x.llave.startswith("kp:") or x.entity_id == eid:
+            continue
+        p = persona_de(x.nombre)
+        if tk == toks(x.nombre) or (len(tk) == 2 and p.nombres and p.apellidos
+                                     and tk == (toks(p.nombres[0])[0], toks(p.apellidos[0])[0])):
+            cand.append(x.entity_id)
+    if len(cand) == 1:
+        G.jefe[eid] = cand[0]
+
+
+_GEN = {}
+
+
+def genero_defecto():
+    if "f" not in _GEN:
+        _GEN["f"] = _genero_defecto()
+    return _GEN["f"]
+
+
 def construir(records, users=None, genero_fn=None) -> Grafo:
     """records: todos los registros normalizados (chats, docs, tables). users: users.json."""
     G = Grafo()
@@ -301,83 +436,14 @@ def construir(records, users=None, genero_fn=None) -> Grafo:
 
     # ---- clientes
     for r in tablas["clientes"]:
-        c = r["columns"]
-        cid = c["cliente_id"]
-        nombre = c.get("nombre_completo", "")
-        e = G.nueva("cl:" + cid)
-        e.nombre = nombre
-        e.genero = genero_fn(nombre.split()[0] if nombre else "", [c.get("ocupacion", ""), c.get("notas", "")])
-        e.ids["cliente_id"] = cid
-        e.records.add(r["id"])
-        G.id(e.entity_id, "cedula", c.get("num_doc", ""))
-        G.id(e.entity_id, "correo", c.get("correo", ""))
-        G.id(e.entity_id, "celular", c.get("celular", ""))
-        if c.get("direccion"):
-            G.id(e.entity_id, "direccion", c["direccion"])
-        if c.get("fecha_nacimiento"):
-            G.id(e.entity_id, "nacimiento", c["fecha_nacimiento"])
-        e.atributos.update({"ciudad": c.get("ciudad", ""), "barrio": c.get("barrio", ""),
-                            "ocupacion": c.get("ocupacion", ""), "direccion": c.get("direccion", ""),
-                            "nacimiento": c.get("fecha_nacimiento", ""),
-                            "anio_vinculacion": (c.get("fecha_vinculacion") or "")[:4]})
-        G.formas_nombre(e.entity_id, nombre)
-        if c.get("correo"):
-            G.forma(e.entity_id, c["correo"].split("@")[0], "local", declarar=False)
-        notas = c.get("notas", "")
-        for m in _RX_PLACA_NOTA.finditer(notas):
-            if m.group(1).lower() not in P.PLACA_NO:
-                G.id(e.entity_id, "placa", m.group(0))
-        for m in _RX_PASAP_NOTA.finditer(notas):
-            G.id(e.entity_id, "pasaporte", m.group(1))
-        for m in P.RX_CREDITO.finditer(notas):
-            G.id(e.entity_id, "credito", m.group(0))
-        for m in re.finditer(r"(?i)\b(?:cl|calle|cra|carrera|tv|dg|av)\.?\s*\d+[A-Za-z]?[^.;]{0,30}#\s*\d+[A-Za-z]?\s*-\s*\d+(?:\s+\w+\s*\d+)?", notas):
-            G.id(e.entity_id, "direccion", m.group(0))
-        if c.get("ciudad"):
-            G.gaz["ciudades"].append(c["ciudad"])
-        if c.get("barrio"):
-            G.gaz["barrios"].setdefault(c.get("ciudad", ""), [])
-            if c["barrio"] not in G.gaz["barrios"][c.get("ciudad", "")]:
-                G.gaz["barrios"][c.get("ciudad", "")].append(c["barrio"])
+        sembrar_cliente(G, r, genero_fn)
 
     # ---- empleados
-    emp_por_correo = {}
     for r in tablas["empleados"]:
-        c = r["columns"]
-        kid = c["id"]
-        e = G.nueva("kp:" + kid)
-        e.nombre = c.get("nombre", "")
-        e.genero = genero_fn(e.nombre.split()[0] if e.nombre else "", [c.get("cargo", "")])
-        e.ids["empleado_id"] = kid
-        e.records.add(r["id"])
-        G.id(e.entity_id, "correo", c.get("correo", ""))
-        G.id(e.entity_id, "celular", c.get("celular", ""))
-        G.id(e.entity_id, "cedula", c.get("documento", ""))
-        if c.get("fecha_nacimiento"):
-            G.id(e.entity_id, "nacimiento", c["fecha_nacimiento"])
-        e.atributos.update({"cargo": c.get("cargo", ""), "reporta_a": c.get("reporta_a", ""),
-                            "ciudad": c.get("ciudad", ""), "anio_ingreso": c.get("ingreso", ""),
-                            "nacimiento": c.get("fecha_nacimiento", "")})
-        G.formas_nombre(e.entity_id, e.nombre)
-        if c.get("correo"):
-            G.forma(e.entity_id, c["correo"].split("@")[0], "local", declarar=False)
-            emp_por_correo[c["correo"].lower()] = e.entity_id
-        if c.get("ciudad"):
-            G.gaz["ciudades"].append(c["ciudad"])
+        sembrar_empleado(G, r, genero_fn)
     for eid, e in list(G.items()):
-        ra = e.atributos.get("reporta_a")
-        if ra and e.llave.startswith("kp:"):
-            tk = toks(ra)
-            cand = []
-            for x in G.values():
-                if not x.llave.startswith("kp:") or x.entity_id == eid:
-                    continue
-                p = persona_de(x.nombre)
-                if tk == toks(x.nombre) or (len(tk) == 2 and p.nombres and p.apellidos
-                                             and tk == (toks(p.nombres[0])[0], toks(p.apellidos[0])[0])):
-                    cand.append(x.entity_id)
-            if len(cand) == 1:
-                G.jefe[eid] = cand[0]
+        if e.llave.startswith("kp:"):
+            resolver_jefe(G, eid)
 
     # ---- usuarios
     cl_por_nombre: dict = {}
