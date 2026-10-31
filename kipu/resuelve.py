@@ -58,6 +58,8 @@ def _es_emp(G, eid):
 RX_RADICADO_LINEA = re.compile(r"\bPQR-\d{4}-\d{3,5}\b")
 CANALES_INTERNOS = ("general", "escalamientos", "fraude-interno", "migracion-pagalo")
 RX_OBRA = re.compile(r"isaacs|novela|campana|edicion|homenaje|tributo")
+RX_TERMINA = re.compile(r"(?:terminad[oa]s?|termina|finaliza|acaba)\s+en\s+(\d{3,4})\b"
+                        r"|ultim[oa]s\s+(?:cuatro\s+|4\s+|tres\s+|3\s+)?(?:digitos|numeros)\s*(?:son\s+|en\s+|:\s*)?(\d{3,4})\b")
 
 
 def _texto_campo(rec, campo):
@@ -408,26 +410,52 @@ def resolver(records: dict, menciones: dict, G: Grafo, genero_fn=None) -> dict:
                 pendientes.append((rid, m))
             elif m.tipo in ("nombre", "slug") and not m.cands:
                 pendientes.append((rid, m))
-    # ---- fase A2: en una línea con radicado ("PQR-2026-0537 | Juliana Mejía | ..."), el nombre es el dueño
-    # de ese radicado si su nombre coincide: así se desempatan los homónimos de las tablas de los informes
+    # ---- fase A2: en una línea con radicado ("PQR-2026-0537 | Juliana Mejía | ..."), el nombre más cercano al
+    # radicado es el dueño de ese radicado si su nombre coincide: así se desempatan los homónimos de las tablas.
+    # Solo el más cercano: en "la PQR-0451 de Daniela Ordóñez con el extracto de Daniela Ordóñez" la segunda es otra.
+    hits = []
     for rid, ms in menciones.items():
         rec = records.get(rid) or {}
         for m in ms:
             if m.kept or m.tipo != "nombre" or getattr(m, "estructurada", False):
                 continue
+            txt = _texto_campo(rec, m.campo)
             linea = _linea(rec, m)
-            rads = RX_RADICADO_LINEA.findall(linea) if linea else []
-            if not rads:
+            if not linea:
                 continue
+            ini_linea = txt.rfind("\n", 0, m.ini) + 1
             tk = toks(m.texto)
-            duenos = set()
-            for rad in rads:
-                d = G.buscar("radicado", rad)
+            for mr in RX_RADICADO_LINEA.finditer(linea):
+                d = G.buscar("radicado", mr.group(0))
                 if d and d in G and not G[d].kept and _nombre_cubre(G[d], tk):
-                    duenos.add(d)
-            if len(duenos) == 1:
-                m.entity_id = next(iter(duenos))
-                stats["radicado_linea"] += 1
+                    pos = ini_linea + mr.start()
+                    dist = m.ini - pos if m.ini >= pos else pos - m.fin
+                    hits.append((dist, rid, m.campo, ini_linea, d, m))
+    tomadas = set()
+    for dist, rid, campo, ini_linea, d, m in sorted(hits, key=lambda h: h[0]):
+        if (rid, campo, ini_linea, d) in tomadas or id(m) in tomadas:
+            continue
+        tomadas.add((rid, campo, ini_linea, d))
+        tomadas.add(id(m))
+        m.entity_id = d
+        stats["radicado_linea"] += 1
+    # ---- fase A3: "Camila Arango, cédula terminada en 2961": los últimos dígitos deciden entre homónimos
+    for rid, ms in menciones.items():
+        for m in ms:
+            if m.kept or m.tipo != "nombre" or m.entity_id is not None and len(set(m.cands)) < 2:
+                continue
+            if len(set(m.cands)) < 2:
+                continue
+            mt = RX_TERMINA.search(F.plano((m.der or "")[:70]))
+            if not mt:
+                continue
+            dig = next(g for g in mt.groups() if g)
+            c_ok = [c for c in set(m.cands) if c in G and not G[c].kept and any(
+                re.sub(r"\D", "", v).endswith(dig)
+                for k in ("cedulas", "celulares", "creditos") for v in (G[c].ids.get(k) or []))]
+            if len(c_ok) == 1:
+                m.entity_id = c_ok[0]
+                stats["ultimos_digitos"] += 1
     # autores cuentan como presencia en su hilo
     # ---- fase B: ambiguas con candidatos (varias vueltas: lo resuelto aporta evidencia)
     for vuelta in range(2):
