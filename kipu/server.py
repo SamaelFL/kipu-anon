@@ -22,6 +22,17 @@ OUTPUT_FILES = {"chats.jsonl": "application/x-ndjson", "docs.jsonl": "applicatio
                 "tables.jsonl": "application/x-ndjson", "entities.json": "application/json"}
 
 
+def _modelos():
+    """Modelos de LLM que usa el pipeline (vacío si el recall está apagado o sin llave)."""
+    if os.environ.get("KIPU_SIN_LLM") or not os.environ.get("OPENROUTER_API_KEY"):
+        return list(MODELS)
+    try:
+        from . import llm
+        return [llm._modelo()]
+    except Exception:   # noqa: BLE001
+        return list(MODELS)
+
+
 def log(msg):
     print("%s %s" % (datetime.now(timezone.utc).strftime("%H:%M:%S"), msg), file=sys.stderr, flush=True)
 
@@ -178,7 +189,7 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method):
         path = self._route()
         if path == "/health" and method == "GET":
-            return self._send(200, {"status": "ok", "team": TEAM, "version": VERSION, "models": MODELS})
+            return self._send(200, {"status": "ok", "team": TEAM, "version": VERSION, "models": _modelos()})
         if not self._auth_ok():
             return self._send(401, {"error": "token inválido"})
         if method == "POST" and path == "/run":
