@@ -48,9 +48,10 @@ class TestValidacion(Base):
     def test_agrega_terceros_con_posicion_exacta(self):
         c = Falso([item("m1", "Daniel"), item("m1", "Kevin Díaz", relacion="jefe")])
         ms = llm.recall([UNIDAD], [], cliente=c)
-        self.assertEqual({(m.record_id, m.texto) for m in ms}, {("m1", "Daniel"), ("m1", "Kevin Díaz")})
+        self.assertEqual({(m.record_id, m.texto) for m in ms}, {("m1", "Daniel"), ("m2", "Daniel"), ("m1", "Kevin Díaz")})   # Daniel también en m2: se busca en toda la unidad
         for m in ms:
-            self.assertEqual(TXT[m.ini:m.fin], m.texto)
+            if m.record_id == "m1":
+                self.assertEqual(TXT[m.ini:m.fin], m.texto)
             self.assertEqual((m.fuente, m.tipo, m.clase), ("llm", "nombre", "tercero"))
 
     def test_todas_las_apariciones_y_con_borde_de_palabra(self):
@@ -82,7 +83,7 @@ class TestValidacion(Base):
         c = Falso([item("m1", "Carulla", tipo="organizacion"), item("m1", "Daniel")])
         sug = []
         ms = llm.recall([UNIDAD], [], sugerencias=sug, cliente=c)
-        self.assertEqual([m.texto for m in ms], ["Daniel"])
+        self.assertEqual([m.texto for m in ms], ["Daniel", "Daniel"])
         self.assertEqual([(m.texto, m.clase) for m in sug], [("Carulla", "organizacion")])
 
     def test_posiciones_en_texto_original_con_invisibles_y_confusables(self):
@@ -96,7 +97,12 @@ class TestValidacion(Base):
 
     def test_respuesta_con_cercas_o_objeto(self):
         ms = llm.recall([UNIDAD], [], cliente=lambda s, u, m: "```json\n" + json.dumps({"menciones": [item("m1", "Daniel")]}) + "\n```")
-        self.assertEqual([m.texto for m in ms], ["Daniel"])
+        self.assertEqual([m.texto for m in ms], ["Daniel", "Daniel"])
+
+    def test_respuesta_cortada_por_max_tokens_se_rescata(self):
+        corte = json.dumps([item("m1", "Daniel"), item("m1", "Kevin Díaz")])[:-30]    # objeto final incompleto
+        ms = llm.recall([UNIDAD], [], cliente=lambda s, u, m: corte)
+        self.assertEqual({m.texto for m in ms}, {"Daniel"})
 
     def test_json_invalido_devuelve_vacio(self):
         self.assertEqual(llm.recall([UNIDAD], [], cliente=lambda s, u, m: "no sé"), [])
@@ -190,7 +196,7 @@ class TestCacheYFallas(Base):
 
         with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep"):
             ms = llm.recall([UNIDAD], [])
-            self.assertEqual([m.texto for m in ms], ["Daniel"])
+            self.assertEqual([m.texto for m in ms], ["Daniel", "Daniel"])
             self.assertEqual(llamadas, [30, 30, 30])
             self.assertEqual((llm.costo()["tokens_in"], llm.costo()["tokens_out"]), (50, 9))
         def siempre500(req, timeout=None):

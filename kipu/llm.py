@@ -38,7 +38,7 @@ PROMPT_VERSION = "v1"
 MODELO_DEFAULT = "anthropic/claude-haiku-5.5"
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT = 30
-MAX_TOKENS = 2000
+MAX_TOKENS = 2500
 HILOS = 8
 REINTENTOS = 3                  # ante 429/5xx
 MAX_CHARS_LOTE = 18000          # texto máximo por llamada
@@ -72,7 +72,8 @@ CRITERIOS
 - tercero: persona mencionada con una relación ("mi hermano Pedro", "mi mamá, Rosa", "mi jefe Andrés Mora", "mi novia Lucía Paz"). texto_exacto es solo el nombre, sin la relación.
 - figura_publica: personaje público (escritores, deportistas, etc.). organizacion: empresa, banco, marca, entidad. lugar: ciudad, barrio, parque, plaza.
 - Un apellido que también es un lugar ("Castilla", "Santander", "Bolívar", "Restrepo") SÍ es persona cuando nombra a una persona ("señor Santander", "Mario Bolívar") y es lugar u organización cuando nombra un lugar o un banco ("Transferencia a Santander", "Parque Simón Bolívar").
-- Reporta cada nombre distinto una vez por registro y campo; el programa encuentra el resto de las apariciones.
+- Reporta cada nombre distinto UNA sola vez en toda la lista (con el primer registro donde aparece, y como mucho una vez por variante de escritura); el programa encuentra el resto de las apariciones. No repitas.
+- No reportes a Kipi (el bot de Kipu Pay).
 - Reporta nombres aunque estén en MAYÚSCULAS, sin tildes o con errores de ortografía; copia exactamente cómo aparecen.
 - No reportes correos, teléfonos, cédulas, placas ni direcciones: otros programas se encargan.
 - Si no hay nada, responde [].
@@ -276,19 +277,37 @@ def _lotes(unidad):
 
 
 def _parsea(texto):
-    """JSON estricto (array, o {"menciones":[...]}); tolera cercas ``` que algunos modelos agregan."""
+    """JSON estricto (array, o {"menciones":[...]}); tolera cercas ``` y una respuesta cortada por
+    max_tokens (rescata los objetos completos del array)."""
     t = texto.strip()
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
     pos = [x for x in (t.find("["), t.find("{")) if x >= 0]
     if not pos:
         return None
+    t = t[min(pos):]
+    dec = json.JSONDecoder()
     try:
-        d, _ = json.JSONDecoder().raw_decode(t[min(pos):])
+        d, _ = dec.raw_decode(t)
+        if isinstance(d, dict):
+            d = d.get("menciones") or d.get("items") or []
+        return d if isinstance(d, list) else None
     except ValueError:
+        pass
+    i = t.find("[")
+    if i < 0:
         return None
-    if isinstance(d, dict):
-        d = d.get("menciones") or d.get("items") or []
-    return d if isinstance(d, list) else None
+    out, i = [], i + 1
+    while True:
+        while i < len(t) and t[i] in " \n\r\t,":
+            i += 1
+        if i >= len(t) or t[i] != "{":
+            break
+        try:
+            o, i = dec.raw_decode(t, i)
+        except ValueError:
+            break
+        out.append(o)
+    return out or None
 
 
 def _procesa_lote(lote, modelo, cliente):
@@ -339,31 +358,31 @@ def _valida(items, regs, spans_conocidos, textos_conocidos, salida, sugerencias)
         genero = it.get("genero") if it.get("genero") in GENEROS else ""
         rel = it.get("relacion") if isinstance(it.get("relacion"), str) else ""
         anc = it.get("ancla") if isinstance(it.get("ancla"), str) else ""
-        limpio, ini, fin, orig = regs[(rid, campo)]
         destino = salida if tipo in AGREGAN else sugerencias
         if destino is None:
             continue
-        pos, hallado = 0, False
-        while True:
-            a = limpio.find(txt, pos)
-            if a < 0:
-                break
-            b = a + len(txt)
-            pos = b
-            if not _borde(limpio, a, b):
-                continue
-            hallado = True
-            oi, of = ini[a], fin[b - 1]
-            if (rid, campo, oi, of) in vistos:
-                continue
-            vistos.add((rid, campo, oi, of))
-            if tipo in AGREGAN and (_solapa(spans_conocidos.get((rid, campo), ()), oi, of)
-                                    or _norm(orig[oi:of]) in textos_conocidos):
-                continue                                  # ya lo tenía el grafo o una regla: no se toca
-            destino.append(MencionLLM(record_id=rid, campo=campo, ini=oi, fin=of, texto=orig[oi:of], tipo="nombre",
-                                      fuente="llm", clase=tipo, genero=genero, relacion=rel[:40], ancla=anc[:80]))
-        if not hallado:
-            continue                                      # span inventado: se descarta
+        if txt not in regs[(rid, campo)][0]:
+            continue                                      # span inventado: no existe en ese record_id y campo
+        # el modelo reporta cada nombre una vez; se busca en todos los registros de la unidad
+        for (rid2, campo2), (limpio, ini, fin, orig) in regs.items():
+            pos = 0
+            while True:
+                a = limpio.find(txt, pos)
+                if a < 0:
+                    break
+                b = a + len(txt)
+                pos = b
+                if not _borde(limpio, a, b):
+                    continue
+                oi, of = ini[a], fin[b - 1]
+                if (rid2, campo2, oi, of, tipo) in vistos:
+                    continue
+                vistos.add((rid2, campo2, oi, of, tipo))
+                if tipo in AGREGAN and (_solapa(spans_conocidos.get((rid2, campo2), ()), oi, of)
+                                        or _norm(orig[oi:of]) in textos_conocidos):
+                    continue                              # ya lo tenía el grafo o una regla: no se toca
+                destino.append(MencionLLM(record_id=rid2, campo=campo2, ini=oi, fin=of, texto=orig[oi:of], tipo="nombre",
+                                          fuente="llm", clase=tipo, genero=genero, relacion=rel[:40], ancla=anc[:80]))
 
 
 def recall(unidades, conocidas=(), sugerencias=None, cliente=None):
