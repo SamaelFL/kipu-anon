@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION, pipeline
-from .sources import ApiSource, SourceError, data_dir
+from .sources import ApiSource, SourceError, _public_ips, data_dir, parse_sources_url
 
 MAX_BODY = 2 * 1024 * 1024
 MAX_RECORDS = 50
@@ -177,8 +177,13 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(body, dict):
                 return self._send(err or 400, {"error": "cuerpo inválido"})
             url, tok = body.get("sources_url"), body.get("token")
-            if not _is_str(url) or not _is_str(tok) or not url.startswith(("http://", "https://")):
+            if not _is_str(url) or not _is_str(tok) or not tok:
                 return self._send(422, {"error": "se requieren sources_url y token"})
+            try:
+                host, port, _ = parse_sources_url(url)
+                _public_ips(host, port)
+            except SourceError as e:
+                return self._send(422, {"error": str(e)})
             return self._send(202, {"job_id": self.jobs.start(url, tok)})
         m = re.fullmatch(r"/run/([^/]+)", path)
         if method == "GET" and m:
