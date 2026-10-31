@@ -69,9 +69,9 @@ Una lista JSON (array) de objetos con exactamente estas claves:
 
 CRITERIOS
 - persona: nombre propio de una persona natural (con o sin apellido, apodos incluidos) que habla o a quien se refiere el texto.
-- tercero: persona mencionada con una relación ("mi hermano Daniel", "mi mamá, Ignacio", "mi jefe Kevin Díaz", "mi novia Daniel Giraldo"). texto_exacto es solo el nombre, sin la relación.
+- tercero: persona mencionada con una relación ("mi hermano Pedro", "mi mamá, Rosa", "mi jefe Andrés Mora", "mi novia Lucía Paz"). texto_exacto es solo el nombre, sin la relación.
 - figura_publica: personaje público (escritores, deportistas, etc.). organizacion: empresa, banco, marca, entidad. lugar: ciudad, barrio, parque, plaza.
-- Un apellido que también es un lugar ("Castilla", "Santander", "Bolívar", "Restrepo") SÍ es persona cuando nombra a una persona ("señor Santander", "Juan Pablo Bolívar") y es lugar u organización cuando nombra un lugar o un banco ("Transferencia a Santander", "Parque Simón Bolívar").
+- Un apellido que también es un lugar ("Castilla", "Santander", "Bolívar", "Restrepo") SÍ es persona cuando nombra a una persona ("señor Santander", "Mario Bolívar") y es lugar u organización cuando nombra un lugar o un banco ("Transferencia a Santander", "Parque Simón Bolívar").
 - Reporta cada nombre distinto una vez por registro y campo; el programa encuentra el resto de las apariciones.
 - Reporta nombres aunque estén en MAYÚSCULAS, sin tildes o con errores de ortografía; copia exactamente cómo aparecen.
 - No reportes correos, teléfonos, cédulas, placas ni direcciones: otros programas se encargan.
