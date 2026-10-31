@@ -6,3 +6,13 @@ material/
 data/
 __pycache__/
 .DS_Store
+
+# catálogos de seudónimos (no son datos del corpus)
+!kipu/data/
+
+# datos personales del corpus: se regeneran desde fuentes/ en cada corrida
+evals/trampas.jsonl
+evals/inyecciones.jsonl
+evals/out/
+*.store.json
+/tmp/
