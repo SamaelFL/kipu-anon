@@ -106,6 +106,7 @@ class Pseudonimizador:
         # números y nombres reales a evitar
         self._grams: set = set()
         self._completos: set = set()  # números reales completos (solo dígitos, 6+)
+        self._previos: set = set()    # seudónimos declarados en la corrida anterior (alnum)
         self._reales_norm: set = set()
         self.agregar_formas_reales(formas_reales)
 
@@ -114,6 +115,11 @@ class Pseudonimizador:
         self._cargar()
 
     # ------------------------------------------------------------------ store
+    def fijar_previos(self, valores):
+        """Seudónimos que la corrida anterior ya entregó: si vuelven a salir para el mismo original se
+        conservan aunque los datos nuevos traigan números parecidos; solo se cambian si ahora son reales."""
+        self._previos = {self._alnum(str(v)) for v in valores if v}
+
     def agregar_formas_reales(self, formas):
         with self._lock:
             for f in formas:
@@ -268,6 +274,9 @@ class Pseudonimizador:
             cand = gen(self._flujo(llave, campo, i))
             if self._alnum(cand) == cmp_:
                 continue
+            if (self._previos and self._alnum(cand) in self._previos
+                    and re.sub(r"\D", "", cand) not in self._completos):
+                return cand
             if self._lejos(re.sub(r"\D", "", cand), original_digitos):
                 return cand
             distinto = distinto or cand

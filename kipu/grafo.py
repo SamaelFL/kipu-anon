@@ -317,10 +317,20 @@ def sembrar_cliente(G: Grafo, r: dict, genero_fn, enlazar: bool = False) -> Enti
             G.llaves["cl:" + cid] = e.entity_id
             e.records.add(r["id"])
             return e
-    e = G.nueva("cl:" + cid)
-    e.nombre = nombre
-    e.genero = genero_fn(nombre.split()[0] if nombre else "", [c.get("ocupacion", ""), c.get("notas", "")])
-    e.ids["cliente_id"] = cid
+    # Misma persona con otro cliente_id (p. ej. CL- y PG- tras una migración): si su cédula, correo o
+    # celular ya son de un solo cliente, la fila es ese cliente; conserva su llave y su seudónimo.
+    fuertes = {x for x in _ids_fuertes(G, c, "clientes") if G[x].llave.startswith("cl:")}
+    if len(fuertes) == 1 and G.por_llave("cl:" + cid) is None:
+        e = G[next(iter(fuertes))]
+        G.llaves["cl:" + cid] = e.entity_id
+        otros = e.atributos.setdefault("cliente_ids", [])  # no es PII: el cliente_id se conserva
+        if cid not in otros:
+            otros.append(cid)
+    else:
+        e = G.nueva("cl:" + cid)
+        e.nombre = nombre
+        e.genero = genero_fn(nombre.split()[0] if nombre else "", [c.get("ocupacion", ""), c.get("notas", "")])
+        e.ids["cliente_id"] = cid
     e.records.add(r["id"])
     G.id(e.entity_id, "cedula", c.get("num_doc", ""))
     G.id(e.entity_id, "correo", c.get("correo", ""))
@@ -329,10 +339,11 @@ def sembrar_cliente(G: Grafo, r: dict, genero_fn, enlazar: bool = False) -> Enti
         G.id(e.entity_id, "direccion", c["direccion"])
     if c.get("fecha_nacimiento"):
         G.id(e.entity_id, "nacimiento", c["fecha_nacimiento"])
-    e.atributos.update({"ciudad": c.get("ciudad", ""), "barrio": c.get("barrio", ""),
-                        "ocupacion": c.get("ocupacion", ""), "direccion": c.get("direccion", ""),
-                        "nacimiento": c.get("fecha_nacimiento", ""),
-                        "anio_vinculacion": (c.get("fecha_vinculacion") or "")[:4]})
+    if e.ids.get("cliente_id") == cid:  # los atributos son los de su primera fila
+        e.atributos.update({"ciudad": c.get("ciudad", ""), "barrio": c.get("barrio", ""),
+                            "ocupacion": c.get("ocupacion", ""), "direccion": c.get("direccion", ""),
+                            "nacimiento": c.get("fecha_nacimiento", ""),
+                            "anio_vinculacion": (c.get("fecha_vinculacion") or "")[:4]})
     G.formas_nombre(e.entity_id, nombre)
     if c.get("correo"):
         G.forma(e.entity_id, c["correo"].split("@")[0], "local", declarar=False)
@@ -420,8 +431,11 @@ def genero_defecto():
     return _GEN["f"]
 
 
-def construir(records, users=None, genero_fn=None) -> Grafo:
-    """records: todos los registros normalizados (chats, docs, tables). users: users.json."""
+def construir(records, users=None, genero_fn=None, previo=None) -> Grafo:
+    """records: todos los registros normalizados (chats, docs, tables). users: users.json.
+
+    previo: {uid: llave} de la corrida anterior. Un usuario viejo sigue siendo la misma persona aunque su
+    perfil cambie (nombre recortado, correo quitado) o llegue un homónimo: su enlace no se recalcula."""
     G = Grafo()
     recs = list(records.values()) if isinstance(records, dict) else list(records)
     tablas: dict = {"clientes": [], "empleados": [], "pqrs": [], "transacciones": []}
@@ -452,6 +466,16 @@ def construir(records, users=None, genero_fn=None) -> Grafo:
             p = persona_de(e.nombre)
             cl_por_nombre.setdefault((F.plano(p.nombres[0]) if p.nombres else "", F.plano(p.apellidos[0]) if p.apellidos else ""), []).append(e.entity_id)
             cl_por_nombre.setdefault(("full", norm(e.nombre)), []).append(e.entity_id)
+    # cliente_id que cada usuario escribe en sus propios mensajes ("PG-9638"): evidencia para enlazarlo
+    ids_propios: dict = {}
+    for r in recs:
+        if r.get("_uid") and r.get("text"):
+            for m in re.finditer(r"\b[A-Z]{2}-\d{3,6}\b", r["text"]):
+                if G.por_llave("cl:" + m.group(0)) is not None:
+                    ids_propios.setdefault(r["_uid"], set()).add(G.llaves["cl:" + m.group(0)])
+    previo = previo or {}
+    vivos = {u.get("id") for u in users or []}
+    reservadas = {ll for uid, ll in previo.items() if uid in vivos}   # clientes ya enlazados a un usuario viejo
     for u in users or []:
         prof = u.get("profile") or {}
         real = (u.get("real_name") or prof.get("real_name") or "").strip()
@@ -463,7 +487,11 @@ def construir(records, users=None, genero_fn=None) -> Grafo:
             continue
         email, titulo = info["email"], info["title"]
         eid = G.buscar("correo", email) if email else None
-        if eid is None:
+        llave_prev = previo.get(u["id"])
+        anclado = bool(llave_prev) and (llave_prev.startswith("uid:") or G.por_llave(llave_prev) is not None)
+        if anclado:
+            eid = G.llaves.get(llave_prev)   # None si era su propia entidad uid:
+        elif eid is None:
             if titulo == "Cliente" or u.get("is_restricted"):
                 p = persona_de(real)
                 cands = []
@@ -471,13 +499,20 @@ def construir(records, users=None, genero_fn=None) -> Grafo:
                     cands = cl_por_nombre.get((F.plano(p.nombres[0]), F.plano(p.apellidos[0])), [])
                 if not cands:
                     cands = cl_por_nombre.get(("full", norm(real)), [])
-                cands = list(dict.fromkeys(cands))
+                cands = [c for c in dict.fromkeys(cands) if G[c].llave not in reservadas]
+                if len(cands) > 1:  # el cliente que otro usuario reclamó con su propio cliente_id no es este
+                    otros = {next(iter(v)) for k, v in ids_propios.items() if k != u["id"] and len(v) == 1}
+                    libres = [c for c in cands if c not in otros]
+                    cands = libres or cands
                 if len(cands) > 1:  # homónimos: el handle = parte local del correo del maestro
                     h = info["handle"].lower()
                     por_h = [c for c in cands if any(x.lower().split("@")[0] == h for x in G[c].ids.get("correos", []))]
                     cands = por_h if len(por_h) == 1 else cands
                 if len(cands) == 1 and not any(u2 for u2 in [] ):
                     eid = cands[0]
+                elif len(ids_propios.get(u["id"], ())) == 1:
+                    # nombre ambiguo o incompleto, pero escribió su propio cliente_id
+                    eid = next(iter(ids_propios[u["id"]]))
             else:
                 p = persona_de(real)
                 cands = [x.entity_id for x in G.values() if x.llave.startswith("kp:") and norm(x.nombre) == norm(real)]
@@ -485,7 +520,7 @@ def construir(records, users=None, genero_fn=None) -> Grafo:
                     eid = cands[0]
         if eid is not None and any(("uid", x) in G.ident for x in []):
             pass
-        if eid is not None and G[eid].ids.get("uids"):
+        if eid is not None and G[eid].ids.get("uids") and not anclado:
             eid = None   # el cliente ya tiene otro usuario: este es otra persona
         if eid is None:
             e = G.nueva("uid:" + u["id"])

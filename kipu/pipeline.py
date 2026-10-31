@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from . import detecta, grafo as grafo_mod, ingest, resuelve
+from . import formas as F
 from . import reemplaza as rz_mod
 from .modelo import Mencion
 from .pseudo import Pseudonimizador
@@ -218,7 +219,8 @@ def _desde_llm(ml, G, texto=None):
 
 
 # ------------------------------------------------------------------ entities.json
-def _entidades_json(G, rz, salida, menciones):
+def _entidades_json(G, rz, salida, menciones, previos=None):
+    previos = previos or {}
     por_id = {r["id"]: r for r in salida}
 
     def texto_de(rid):
@@ -252,6 +254,11 @@ def _entidades_json(G, rz, salida, menciones):
                 continue
             if contiene(blob, v):
                 ps[k] = v
+        # lo declarado en la corrida anterior se mantiene mientras siga en sus registros: un dato nuevo de
+        # la persona (otro celular, otra fecha) no cambia lo que ya se le había declarado
+        for k, v in (previos.get(e.entity_id) or {}).items():
+            if isinstance(v, str) and v and contiene(blob, v):
+                ps[k] = v
         if not ps:
             continue
         # un record solo se declara si en él aparece algún seudónimo de la persona (nombre completo o una parte)
@@ -268,6 +275,15 @@ def _entidades_json(G, rz, salida, menciones):
             continue
         ents.append({"entity_id": e.entity_id, "type": "person", "originals": originals, "pseudonyms": ps,
                      "records": recs})
+    # Un nombre de pila en minúscula ("yesenia") que es también parte del seudónimo de otra persona
+    # ("Yesenia Mendoza", fijo desde la corrida anterior) no es una fuga: es el seudónimo. Su forma con
+    # mayúscula ya va declarada; se quita solo la minúscula para que el barrido no la confunda.
+    fichas = {F.plano(t) for x in ents for t in str((x.get("pseudonyms") or {}).get("name", "")).split()}
+    for x in ents:
+        ori = x["originals"]
+        x["originals"] = [f for f in ori if not (
+            " " not in f and f.isalpha() and f[:1].islower() and F.plano(f) in fichas
+            and any(o != f and o[:1].isupper() and F.plano(o) == F.plano(f) for o in ori))]
     return ents
 
 
@@ -288,6 +304,25 @@ def _texto_plano(r):
 
 
 # ------------------------------------------------------------------ corrida completa
+def _enlaces_previos(state_dir):
+    """{uid: llave} del grafo de la corrida anterior (vacío si no hay o no se puede leer)."""
+    try:
+        d = json.loads((Path(state_dir) / "grafo.json").read_text("utf-8"))
+        return {uid: x["llave"] for x in d.get("entidades", []) for uid in (x.get("ids") or {}).get("uids", [])}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def _declarados_previos(out_dir):
+    """{entity_id: pseudonyms} del entities.json de la corrida anterior en out_dir (vacío si no hay)."""
+    try:
+        d = json.loads((Path(out_dir) / "entities.json").read_text("utf-8"))
+        ents = d["entities"] if isinstance(d, dict) else d
+        return {x["entity_id"]: x.get("pseudonyms") or {} for x in ents if isinstance(x, dict) and not x.get("kept")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
 def run(source, out_dir, state_dir=None):
     """Regenera los cuatro archivos de salida en out_dir (escritura atómica)."""
     t0 = time.time()
@@ -298,6 +333,7 @@ def run(source, out_dir, state_dir=None):
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
 
+    previos = _declarados_previos(out_dir)
     chats = ingest.ingest_chats(source)
     docs = ingest.ingest_docs(source)
     tables = ingest.ingest_tables(source)
@@ -308,8 +344,9 @@ def run(source, out_dir, state_dir=None):
     records = chats + docs + tables
     log("ingesta: chats=%d docs=%d tables=%d" % (len(chats), len(docs), len(tables)))
 
-    G = grafo_mod.construir(records, users, genero_fn=None)
+    G = grafo_mod.construir(records, users, genero_fn=None, previo=_enlaces_previos(state_dir))
     ps = Pseudonimizador(secreto(), state_dir / "store.json")
+    ps.fijar_previos(v for d in previos.values() for v in d.values() if isinstance(v, str))
     motor = Motor(G, ps)
     D = detecta.detector(G)
     rec_map = {r["id"]: r for r in records}
@@ -346,7 +383,7 @@ def run(source, out_dir, state_dir=None):
             log("cuasi.aplicar falló: %s" % type(e).__name__)
     salida = [_publico(r) for r in salida]
 
-    ents = _entidades_json(G, rz, salida, menciones)
+    ents = _entidades_json(G, rz, salida, menciones, previos)
     for e in G.values():
         pu = next((x for x in ents if x["entity_id"] == e.entity_id), None)
         if pu:

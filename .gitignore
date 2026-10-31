@@ -16,3 +16,5 @@ evals/inyecciones.jsonl
 evals/out/
 *.store.json
 /tmp/
+fuentes_v2/
+fuentes_*/

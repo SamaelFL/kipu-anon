@@ -133,14 +133,14 @@ class Contexto:
 
     def puntaje_tx(self, eid, rid):
         e = self.G[eid]
-        cid = e.ids.get("cliente_id")
-        if not cid:
+        cids = [x for x in [e.ids.get("cliente_id")] + e.atributos.get("cliente_ids", []) if x]
+        if not cids:
             return 0
         montos, fechas = self.evidencia_tx(rid)
         if not montos:
             return 0
         s = 0
-        for fecha, monto in self.G.tx.get(cid, []):
+        for fecha, monto in [t for cid in cids for t in self.G.tx.get(cid, [])]:
             if monto in montos:
                 s = max(s, 2 if any(fecha.endswith(f) for f in fechas) else 1)
         return s
