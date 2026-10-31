@@ -243,5 +243,76 @@ class Verifica(unittest.TestCase):
         self.assertEqual(len(rep["enlace"]["tuplas_en_texto"]), 1)
 
 
+class SoloTextoLibre(unittest.TestCase):
+    def test_transaccion_intacta(self):
+        tx = {"id": "transacciones:TX-1", "table": "transacciones",
+              "columns": {"tx_id": "TX-1", "descripcion": "Compra D1 Castilla", "monto": "5000"}}
+        pq = {"id": "pqrs:1", "table": "pqrs", "columns": {"radicado": "PQR-1", "ciudad": "Medellín",
+              "descripcion": "Soy administrador, vivo en Castilla y soy cliente desde 2020.",
+              "respuesta": "Gracias por escribir"}}
+        e = Entidad("p_5", "cl:CL-5", atributos={"ciudad": "Medellín", "barrio": "Castilla",
+                                                 "ocupacion": "administrador", "anio_vinculacion": 2020},
+                    records={"transacciones:TX-1", "pqrs:1"})
+        recs = maestro_base() + [tx, pq]
+        cuasi.aplicar(recs, [e], pseudo())
+        self.assertEqual(tx["columns"]["descripcion"], "Compra D1 Castilla")
+        self.assertEqual(pq["columns"]["descripcion"],
+                         "Soy profesional de servicios, vivo en Medellín y soy cliente desde hace unos años.")
+
+    def test_campos_libres(self):
+        c = chat("c1", "x")
+        d = {"id": "d1", "format": "md", "filename": "a.md", "title": "t", "body": "b", "metadata": {"x": "y"}}
+        tx = {"id": "t", "table": "transacciones", "columns": {"descripcion": "Compra"}}
+        cl = cliente("CL-1", "Cali", "Granada", "chef", 2020, notas="n")
+        self.assertEqual([x[2] for x in cuasi.campos_libres(c)], ["text"])
+        self.assertEqual([x[2] for x in cuasi.campos_libres(d)], ["body", "title"])
+        self.assertEqual(list(cuasi.campos_libres(tx)), [])
+        self.assertEqual([x[2] for x in cuasi.campos_libres(cl)], ["columns.notas"])
+
+    def test_notas_de_clientes_si(self):
+        m = maestro_base()
+        m[5]["columns"]["notas"] = "Es fotógrafa y vive en Granada"
+        cuasi.aplicar(m, [], pseudo())
+        self.assertEqual(m[5]["columns"]["notas"], "Es profesional de las industrias creativas y vive en Cali")
+
+
+class TuplaSinBarrio(unittest.TestCase):
+    def test_caso_real_contadora_barranquilla_2024(self):
+        m = maestro_base() + [cliente("CL-20", "Barranquilla", "Riomar", "contadora", 2024)]
+        t = ("Hablé con la afectada (la de Barranquilla). Es contadora, lleva con nosotros desde 2024, y está más "
+             "molesta por el tono del correo que por el dato. Le ofrecí 6 meses sin cuota de manejo.")
+        r = [chat("80e0b943-4ec1-571c-a4cf-14ab90b15605", t)]
+        _, cambios = cuasi.aplicar(m + r, [], pseudo())
+        self.assertEqual(r[0]["text"], t.replace("Es contadora", "Es profesional de servicios")
+                         .replace("desde 2024", "desde hace unos años"))
+        self.assertIn("Barranquilla", r[0]["text"])  # la ciudad se conserva
+        self.assertIn("6 meses", r[0]["text"])
+        self.assertTrue(all(c["k"] < 5 for c in cambios if c["record_id"].startswith("80e0")))
+
+    def test_misma_frase_sin_barrio(self):
+        m = maestro_base() + [cliente("CL-20", "Barranquilla", "Riomar", "contadora", 2024)]
+        r = [chat("x", "una contadora de Barranquilla, vinculada en 2024, siempre paga")]
+        cuasi.aplicar(m + r, [], pseudo())
+        self.assertEqual(r[0]["text"], "una profesional de servicios de Barranquilla, vinculada en hace unos años, siempre paga")
+
+    def test_fuentes_reales(self):
+        base = RAIZ / "fuentes"
+        if not base.exists():
+            self.skipTest("sin fuentes/")
+        from kipu import ingest
+        from kipu.sources import LocalSource
+        src = LocalSource(str(base))
+        recs = ingest.ingest_chats(src) + ingest.ingest_docs(src) + ingest.ingest_tables(src)
+        antes = {r["id"]: json.dumps(r, ensure_ascii=False) for r in recs if r.get("table") == "transacciones"}
+        cuasi.aplicar(recs, [], pseudo())
+        por = {r["id"]: r for r in recs}
+        t = por["80e0b943-4ec1-571c-a4cf-14ab90b15605"]["text"]
+        self.assertIn("profesional de servicios", t)
+        self.assertNotIn("2024", t)
+        self.assertIn("Barranquilla", t)
+        for rid, original in antes.items():
+            self.assertEqual(json.dumps(por[rid], ensure_ascii=False), original)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -27,7 +27,7 @@ CLAVES_PROTEGIDAS = {"id", "thread_id", "ts", "table", "format", "ocupacion", "b
 _CTX = re.compile(
     r"entré|ingresé|ingreso\b|me vinculé|vinculad[oa]s?\b|vinculación|(?:cliente|clienta|usuari[oa]|afiliad[oa]|socio|socia)\s+desde"
     r"|me uní|me registré|me inscribí|abrí (?:mi|la|una) cuenta|con ustedes|con kipu"
-    r"|desde que (?:soy|estoy)|antigüedad"
+    r"|desde que (?:soy|estoy)|antigüedad|con nosotros|lleva\b|llevo\b|llevamos\b"
 )
 _ANIO = re.compile(r"(?<![\d\-/.,])(?:19[5-9]\d|20[0-4]\d)(?![\d\-/]|[.,]\d)")
 _FRASE = re.compile(r"[.!?\n]+")
@@ -153,6 +153,28 @@ def hojas(obj, ruta="", protegidas=CLAVES_PROTEGIDAS):
                 yield from hojas(v, sub, protegidas)
 
 
+# texto libre: único lugar donde se reemplaza oficio, barrio y año. Una descripción de transacción
+# ("Compra D1 Castilla") es comercio y lugar: nunca se toca.
+LIBRES_DOCS = ("body", "title")
+LIBRES_TABLA = {"clientes": ("notas",), "pqrs": ("descripcion", "respuesta")}
+
+
+def campos_libres(r):
+    """(contenedor, clave, ruta, texto) de los campos de texto libre de un registro."""
+    if "table" in r:
+        cols = r.get("columns")
+        if isinstance(cols, dict):
+            for c in LIBRES_TABLA.get(r.get("table"), ()):
+                if isinstance(cols.get(c), str):
+                    yield cols, c, "columns." + c, cols[c]
+    elif "body" in r:
+        for c in LIBRES_DOCS:
+            if isinstance(r.get(c), str):
+                yield r, c, c, r[c]
+    elif isinstance(r.get("text"), str):
+        yield r, "text", "text", r["text"]
+
+
 def _capitaliza(orig: str, nuevo: str) -> str:
     return nuevo[:1].upper() + nuevo[1:] if orig[:1].isupper() else nuevo
 
@@ -226,12 +248,14 @@ class Tuplas:
                 return v
         return self.pseudo.sector_defecto
 
-    def detectar(self, s: str):
-        """Tupla del segmento `s` (una frase): dict con oficio, barrio, ciudad, anio, k, tipo; o None."""
+    def detectar(self, s: str, ancla=None):
+        """Tupla en la ventana `s` (la frase del oficio y sus vecinas): dict o None.
+        `ancla` = (ini, fin) restringe el oficio a ese tramo de `s`."""
         if not self.rx_ofi:
             return None
         p = _p(s)
-        ofi = [(m.start(), m.end(), self.var[m.group()]) for m in self.rx_ofi.finditer(p)]
+        ofi = [(m.start(), m.end(), self.var[m.group()]) for m in self.rx_ofi.finditer(p)
+               if ancla is None or ancla[0] <= m.start() < ancla[1]]
         if not ofi:
             return None
         bar = [(m.start(), m.end(), m.group()) for m in self.rx_bar.finditer(p)] if self.rx_bar else []
@@ -249,8 +273,8 @@ class Tuplas:
             return None
         return {"oficio": o, "barrio": b, "ciudad": c, "anio": a, "k": k, "tipo": tipo}
 
-    def spans(self, s: str, base: int = 0) -> list:
-        t = self.detectar(s)
+    def spans_ventana(self, s: str, base: int, ancla=None) -> list:
+        t = self.detectar(s, ancla)
         if not t or t["k"] >= self.k:
             return []
         o, b, c, a = t["oficio"], t["barrio"], t["ciudad"], t["anio"]
@@ -265,6 +289,18 @@ class Tuplas:
                 res.append((b[0] + base, b[1] + base, ciudad, "barrio", t["k"], t["tipo"]))
         if a:
             res.append((a[0] + base, a[1] + base, HACE, "anio", t["k"], t["tipo"]))
+        return res
+
+    def spans(self, texto: str) -> list:
+        """Tuplas de un texto libre: por cada frase con oficio, mira esa frase y las dos vecinas."""
+        segs = [(b, sg) for b, sg in segmentos(texto)]
+        res = []
+        for i, (b, sg) in enumerate(segs):
+            if not sg.strip() or not self.rx_ofi or not self.rx_ofi.search(_p(sg)):
+                continue
+            ini = segs[max(i - 1, 0)][0]
+            fin = segs[min(i + 1, len(segs) - 1)][0] + len(segs[min(i + 1, len(segs) - 1)][1])
+            res += self.spans_ventana(texto[ini:fin], ini, ancla=(b - ini, b - ini + len(sg)))
         return res
 
 
@@ -325,17 +361,15 @@ def aplicar(records, entidades, pseudo, k: int = K):
 
     for r in records:
         personas = por_registro.get(r.get("id"), [])
-        for cont, clave, ruta, s in list(hojas(r)):
+        for cont, clave, ruta, s in list(campos_libres(r)):
             if not s:
                 continue
             p = _p(s)
             spans = []
             for pr in personas:
                 spans += [(a, b, n, t, who, "persona", None) for a, b, n, t, who in pr.spans(s, p)]
-            for base, seg in segmentos(s):
-                if seg:
-                    for a, b, n, t, kk, tipo in tuplas.spans(seg, base):
-                        spans.append((a, b, n, t, None, tipo, kk))
+            for a, b, n, t, kk, tipo in tuplas.spans(s):
+                spans.append((a, b, n, t, None, tipo, kk))
             if not spans:
                 continue
             spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))

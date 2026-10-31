@@ -196,24 +196,31 @@ def ataque_enlace(output_records, entidades, maestro=None, k=cuasi.K) -> dict:
     tuplas = []
     det = cuasi.Tuplas(maestro, _SectorFalso(), k)
     for r in output_records:
-        for _, texto in _campos_valor(r):
-            for _, seg in cuasi.segmentos(texto):
-                t = det.detectar(seg) if seg else None
-                if t and t["k"] < k:
-                    tuplas.append({"record_id": r.get("id"), "tipo": t["tipo"], "k": t["k"], "fragmento": seg.strip()[:160]})
+        for _, _, ruta, texto in cuasi.campos_libres(r):
+            for t in _tuplas_en(det, texto):
+                if t["k"] < k:
+                    tuplas.append({"record_id": r.get("id"), "tipo": t["tipo"], "k": t["k"], "fragmento": t["fragmento"]})
     return {"reidentificados": reid, "grupos_chicos": chicos, "tuplas_en_texto": tuplas}
+
+
+def _tuplas_en(det, texto):
+    segs = list(cuasi.segmentos(texto))
+    for i, (b, sg) in enumerate(segs):
+        if not sg.strip():
+            continue
+        ini = segs[max(i - 1, 0)][0]
+        ult = segs[min(i + 1, len(segs) - 1)]
+        ventana = texto[ini:ult[0] + len(ult[1])]
+        t = det.detectar(ventana, ancla=(b - ini, b - ini + len(sg)))
+        if t:
+            t["fragmento"] = ventana.strip()[:160]
+            yield t
 
 
 class _SectorFalso:
     """Para detectar tuplas con el oficio ORIGINAL en la salida solo se necesita el catálogo del maestro."""
     sectores: dict = {}
     sector_defecto = ""
-
-
-def _campos_valor(r):
-    for ruta, s in _campos(r):
-        if not ruta.startswith("clave:") and ruta.split(".")[-1] not in cuasi.CLAVES_PROTEGIDAS:
-            yield ruta, s
 
 
 # ------------------------------------------------------------------ (c) reglas de entities.json
